@@ -1,0 +1,44 @@
+table: invoices
+description: One row per invoice issued for a subscription
+columns:
+  - name: invoice_id
+    type: varchar
+    required: true
+    unique: true
+    description: Stable unique identifier for the invoice, formatted INV- followed by seven digits
+  - name: customer_id
+    type: varchar
+    required: true
+    unique: false
+    description: Identifier of the billed customer, formatted CUS- followed by six digits
+  - name: subscription_id
+    type: varchar
+    required: true
+    unique: false
+    description: Identifier of the subscription this invoice bills, formatted SUB- followed by six digits
+  - name: invoice_date
+    type: date
+    required: true
+    unique: false
+    description: Date the invoice was issued
+  - name: due_date
+    type: date
+    required: true
+    unique: false
+    description: Date payment of the invoice is due, on or after the invoice date
+  - name: amount_usd
+    type: decimal(10,2)
+    required: true
+    unique: false
+    description: Total amount billed on the invoice in US dollars, zero or more
+  - name: status
+    type: varchar
+    required: true
+    unique: false
+    allowed_values: [open, paid, void, uncollectible]
+    description: Payment state of the invoice
+  - name: paid_at
+    type: date
+    required: false
+    unique: false
+    description: Date the invoice was paid; empty unless the status is paid

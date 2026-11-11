@@ -1,0 +1,23 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Generated data (clean tables, per-run warehouses) and eval cases
+data/
+evals/cases/
+
+# Tooling
+mlruns/
+node_modules/
+.next/
+.DS_Store

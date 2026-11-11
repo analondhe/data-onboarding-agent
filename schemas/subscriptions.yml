@@ -1,0 +1,45 @@
+table: subscriptions
+description: One row per subscription a customer has held, current or past
+columns:
+  - name: subscription_id
+    type: varchar
+    required: true
+    unique: true
+    description: Stable unique identifier for the subscription, formatted SUB- followed by six digits
+  - name: customer_id
+    type: varchar
+    required: true
+    unique: false
+    description: Identifier of the customer who owns the subscription, formatted CUS- followed by six digits
+  - name: plan
+    type: varchar
+    required: true
+    unique: false
+    allowed_values: [free, pro, enterprise]
+    description: Subscription tier purchased under this subscription
+  - name: status
+    type: varchar
+    required: true
+    unique: false
+    allowed_values: [trialing, active, past_due, canceled]
+    description: Lifecycle state of the subscription
+  - name: started_at
+    type: date
+    required: true
+    unique: false
+    description: Date the subscription began, on or after the customer's signup date
+  - name: canceled_at
+    type: date
+    required: false
+    unique: false
+    description: Date the subscription was canceled; empty unless the status is canceled
+  - name: monthly_amount_usd
+    type: decimal(10,2)
+    required: true
+    unique: false
+    description: Recurring monthly charge for the subscription in US dollars, zero or more
+  - name: seats
+    type: integer
+    required: true
+    unique: false
+    description: Number of user seats (licenses) included in the subscription, one or more

@@ -1,0 +1,39 @@
+table: customers
+description: One row per Acme Cloud customer account
+columns:
+  - name: customer_id
+    type: varchar
+    required: true
+    unique: true
+    description: Stable unique identifier for the customer account, formatted CUS- followed by six digits
+  - name: company_name
+    type: varchar
+    required: true
+    unique: false
+    description: Legal or trading name of the customer's company
+  - name: contact_email
+    type: varchar
+    required: true
+    unique: false
+    description: Email address of the customer's primary account contact
+  - name: country
+    type: varchar
+    required: false
+    unique: false
+    description: Two-letter ISO 3166-1 alpha-2 code of the country where the customer is based
+  - name: signup_date
+    type: date
+    required: true
+    unique: false
+    description: Date the customer first created an account
+  - name: plan
+    type: varchar
+    required: true
+    unique: false
+    allowed_values: [free, pro, enterprise]
+    description: Current subscription tier of the customer
+  - name: is_active
+    type: boolean
+    required: true
+    unique: false
+    description: Whether the customer account is currently active (true or false)
