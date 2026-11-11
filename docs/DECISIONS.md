@@ -5,6 +5,7 @@ One line per choice the spec left open.
 ## Milestone 1
 
 - **Tooling:** `uv` installed with Homebrew; dependencies locked in `uv.lock`; the project is not packaged (`tool.uv.package = false`), and modules are imported from the repo root.
+- **Added dependency:** `pytest-cov` (dev) measures the 80% `tools/` coverage that Milestone 2 requires. Approved by the user.
 - **Added dependency:** `pyyaml` reads `schemas/*.yml`. Approved before work started.
 - **Parquet:** written by DuckDB (`COPY ... TO ... (FORMAT parquet)`) with column types taken from the schema YAML, so `pyarrow`/`pandas` are not needed.
 - **Fixed reference date:** generated dates are anchored to 2025-06-30 instead of today, so the same seed gives the same data on any day.
