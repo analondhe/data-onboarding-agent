@@ -39,6 +39,7 @@ class Settings:
     data_dir: Path
     review_confidence_threshold: float
     agent_max_steps: int
+    build_max_repairs: int
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -57,4 +58,5 @@ class Settings:
             data_dir=data_dir,
             review_confidence_threshold=float(env("REVIEW_CONFIDENCE_THRESHOLD", "0.8")),
             agent_max_steps=int(env("AGENT_MAX_STEPS", "25")),
+            build_max_repairs=int(env("BUILD_MAX_REPAIRS", "3")),
         )

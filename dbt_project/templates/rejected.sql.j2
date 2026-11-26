@@ -1,0 +1,8 @@
+{#- Quarantined rows: never dropped, kept with the reason and the original raw values. -#}
+select
+    _file_id,
+    _source_row,
+    reject_reason,
+    _raw_values
+from {{ "{{" }} ref('{{ checked_model }}') {{ "}}" }}
+where reject_reason is not null

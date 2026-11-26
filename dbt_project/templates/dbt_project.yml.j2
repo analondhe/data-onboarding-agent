@@ -1,0 +1,16 @@
+# Rendered by tools/dbt_runner.py for run {{ run_id }}. Do not edit; it is rebuilt on every build.
+name: onboarding
+version: "1.0"
+profile: onboarding
+config-version: 2
+
+flags:
+  send_anonymous_usage_stats: false
+
+models:
+  onboarding:
+    +materialized: table
+
+data_tests:
+  onboarding:
+    +store_failures: true

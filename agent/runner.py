@@ -1,7 +1,9 @@
-"""Run one onboarding through Profile and Map, persisting state at every step.
+"""Run one onboarding through Profile, Map, review, and Build, persisting state at every step.
 
-The run ends in ``awaiting_review`` (mappings and defects stored) or ``failed`` (with the
-reason in ``runs.error``). The Build phase and resume come in later milestones.
+``onboard`` stops at ``awaiting_review`` unless a reviewer is passed (the CLI's --approve-all,
+or the eval harness answering from the answer key); then it builds in the same trace and ends
+in ``done`` or ``failed`` (with the reason in ``runs.error``). ``build_run`` builds a run that
+was reviewed later, in its own trace.
 """
 
 from __future__ import annotations
@@ -14,7 +16,8 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from agent.llm import LLM
-from agent.phases import MapOutcome, map_phase, profile_phase
+from agent.loop import LoopResult
+from agent.phases import MapOutcome, build_phase, map_phase, profile_phase
 from agent.settings import Settings
 from agent.tracing import Tracer
 from api.models import (
@@ -29,6 +32,8 @@ from api.models import (
 from datagen.schemas import load_schema
 from tools.profiling import FileProfile
 from tools.warehouse import FileInfo, ToolError, Warehouse
+
+Reviewer = Callable[[Session, Run, Warehouse], None]
 
 
 def new_run_id() -> str:
@@ -118,6 +123,49 @@ def _store_outcome(session: Session, run: Run, source: SourceFile, outcome: MapO
     session.commit()
 
 
+def _add_loop_stats(run: Run, loop: LoopResult | None) -> None:
+    if loop is not None:
+        run.model_calls += loop.steps
+        run.tool_calls += loop.tool_calls
+        run.prompt_tokens += loop.prompt_tokens
+        run.completion_tokens += loop.completion_tokens
+
+
+def _build(
+    session: Session,
+    settings: Settings,
+    llm: LLM | None,
+    tracer: Tracer,
+    run: Run,
+    wh: Warehouse,
+    retries: int,
+    sleep: Callable[[float], None],
+) -> None:
+    """Build an awaiting-review run whose mappings are all decided. Raises _RunFailed."""
+    session.expire(run, ["mappings", "files", "defects"])
+    pending = [m for m in run.mappings if m.status == MappingStatus.PROPOSED]
+    if pending:
+        raise _RunFailed(f"{len(pending)} mappings still need review before the build")
+    _set_status(session, run, RunStatus.BUILDING)
+    with tracer.span("phase:build", "CHAIN"):
+        outcome = build_phase(
+            session, run, wh, llm, load_schema(run.target_schema),
+            max_repairs=settings.build_max_repairs, max_steps=settings.agent_max_steps,
+            tracer=tracer, retries=retries, backoff_seconds=settings.llm_retry_backoff_seconds,
+            sleep=sleep,
+        )  # fmt: skip
+    _add_loop_stats(run, outcome.loop)
+    run.build_report = {
+        "status": outcome.status,
+        "repairs": outcome.repairs,
+        "dbt": outcome.result.model_dump(),
+        "row_accounting": [{**a.model_dump(), "balanced": a.balanced} for a in outcome.accounting],
+    }
+    if outcome.status != "passed":
+        raise _RunFailed(outcome.reason or "build failed")
+    _set_status(session, run, RunStatus.DONE)
+
+
 def onboard(
     session: Session,
     settings: Settings,
@@ -128,6 +176,7 @@ def onboard(
     schema_name: str,
     paths: list[Path],
     run_id: str | None = None,
+    review: Reviewer | None = None,
     retries: int = 3,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Run:
@@ -164,15 +213,14 @@ def onboard(
                         retries=retries, backoff_seconds=settings.llm_retry_backoff_seconds,
                         sleep=sleep,
                     )  # fmt: skip
-                if outcome.loop is not None:
-                    run.model_calls += outcome.loop.steps
-                    run.tool_calls += outcome.loop.tool_calls
-                    run.prompt_tokens += outcome.loop.prompt_tokens
-                    run.completion_tokens += outcome.loop.completion_tokens
+                _add_loop_stats(run, outcome.loop)
                 if outcome.status != "submitted":
                     raise _RunFailed(f"Mapping {file.filename} failed: {outcome.reason}")
                 _store_outcome(session, run, sources[file.file_id], outcome)
             _set_status(session, run, RunStatus.AWAITING_REVIEW)
+            if review is not None:
+                review(session, run, wh)
+                _build(session, settings, llm, tracer, run, wh, retries, sleep)
         except (ToolError, _RunFailed) as exc:
             _set_status(session, run, RunStatus.FAILED, str(exc))
         run.duration_seconds = round(time.monotonic() - started, 2)
@@ -184,3 +232,31 @@ def onboard(
 
 class _RunFailed(Exception):
     pass
+
+
+def build_run(
+    session: Session,
+    settings: Settings,
+    llm: LLM | None,
+    tracer: Tracer,
+    run: Run,
+    *,
+    retries: int = 3,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Run:
+    """Build a run that was reviewed after onboarding. Rebuilding replaces the dbt tables."""
+    if run.status not in (RunStatus.AWAITING_REVIEW, RunStatus.FAILED, RunStatus.DONE):
+        raise ToolError(f"Run {run.id} is {run.status}; it cannot be built now")
+    wh = Warehouse.for_run(run.id, settings.data_dir)
+    started = time.monotonic()
+    with tracer.span("build", "AGENT", inputs={"run_id": run.id}) as root:
+        tracer.tag_trace({"run_id": run.id, "model": llm.model if llm else "none"})
+        try:
+            _build(session, settings, llm, tracer, run, wh, retries, sleep)
+        except (ToolError, _RunFailed) as exc:
+            _set_status(session, run, RunStatus.FAILED, str(exc))
+        run.duration_seconds = round((run.duration_seconds or 0) + time.monotonic() - started, 2)
+        session.commit()
+        root.set_outputs({"status": run.status, "error": run.error})
+    tracer.flush()
+    return run

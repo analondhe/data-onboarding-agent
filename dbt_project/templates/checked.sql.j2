@@ -1,0 +1,84 @@
+{#- Every source row of every file, with each target column computed by its transform and a
+    reject_reason for rows that must be quarantined: a value that did not convert, a missing
+    required value, or a later duplicate of the key. Rendered by tools/dbt_runner.py. -#}
+{{ "{% raw %}" }}
+with
+{%- for file in files %}
+file_{{ loop.index }}_raw as (
+    select
+        '{{ file.file_id }}' as _file_id,
+        _row as _source_row,
+        {{ file.raw_json }} as _raw_values
+        {%- for col in file.columns %},
+        {{ col.out_sql }} as "{{ col.name }}__out",
+        {{ col.has_input_sql }} as "{{ col.name }}__has_input"
+        {%- endfor %}
+    from raw."{{ file.table_name }}"
+),
+
+file_{{ loop.index }} as (
+    select
+        _file_id,
+        _source_row,
+        _raw_values
+        {%- for col in file.columns %},
+        try_cast("{{ col.name }}__out" as {{ col.type }}) as "{{ col.name }}",
+        case
+            when "{{ col.name }}__out" is not null
+                and try_cast("{{ col.name }}__out" as {{ col.type }}) is null
+                then 'could not convert {{ col.name }}'
+            when "{{ col.name }}__has_input" and "{{ col.name }}__out" is null
+                then 'could not convert {{ col.name }}'
+        end as "{{ col.name }}__error"
+        {%- endfor %}
+    from file_{{ loop.index }}_raw
+),
+{%- endfor %}
+
+combined as (
+    {%- for file in files %}
+    select * from file_{{ loop.index }}
+    {%- if not loop.last %}
+    union all by name
+    {%- endif %}
+    {%- endfor %}
+),
+
+row_checked as (
+    select
+        *,
+        nullif(concat_ws('; '
+            {%- for col in columns %},
+            "{{ col.name }}__error"
+            {%- if col.required %},
+            case when "{{ col.name }}" is null and "{{ col.name }}__error" is null
+                then 'missing required {{ col.name }}' end
+            {%- endif %}
+            {%- endfor %}
+        ), '') as _row_reason
+    from combined
+)
+
+select
+    _file_id,
+    _source_row,
+    _raw_values
+    {%- for col in columns %},
+    "{{ col.name }}"
+    {%- endfor %},
+    {%- if key %}
+    coalesce(
+        _row_reason,
+        case
+            when row_number() over (
+                partition by "{{ key }}"
+                order by _row_reason is not null, _file_id, _source_row
+            ) > 1
+                then 'duplicate {{ key }}'
+        end
+    ) as reject_reason
+    {%- else %}
+    _row_reason as reject_reason
+    {%- endif %}
+from row_checked
+{{ "{% endraw %}" }}
