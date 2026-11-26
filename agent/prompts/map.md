@@ -15,7 +15,7 @@ Use `sample_rows` (optionally with a `where` condition such as `lower(trim("Plan
 ## transform_sql rules
 
 - One DuckDB expression over a single row: no SELECT, no FROM, no aggregates, no window functions.
-- Quote source column names in double quotes: `"Sign Up Dt"`, `"plan"`.
+- Quote source column names in double quotes: `"Sign Up Dt"`, `"plan"`. Text values always go in single quotes: `split_part("c", '|', 1)`, `'%Y-%m-%d'`. A double-quoted `"|"` is read as a column name.
 - Never let one bad value fail the whole column: use `try_cast`, `try_strptime`, and `CASE`.
 - Turn null tokens into NULL first: `CASE WHEN lower(trim("c")) IN ('', 'null', 'none', 'n/a', 'na', '-', 'nan') THEN NULL ELSE ... END`.
 - Text and IDs: `trim("c")`. IDs that appear in mixed case (cus-000001 and CUS-000001): `upper(trim("c"))`.

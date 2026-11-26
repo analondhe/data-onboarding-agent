@@ -109,6 +109,12 @@ def validate_expression(sql: str, columns: list[str]) -> str:
             if node.table:
                 raise UnsafeSQLError(f"Use bare column names without a table: {node.sql('duckdb')}")
             if not any(c.lower() == node.name.lower() for c in columns):
+                if isinstance(node.this, exp.Identifier) and node.this.quoted:
+                    raise UnsafeSQLError(
+                        f'"{node.name}" is in double quotes, which SQL reads as a column name, '
+                        f"and there is no such column. Write text values in single quotes, "
+                        f"e.g. '{node.name}'. Columns are: {', '.join(columns)}."
+                    )
                 raise UnsafeSQLError(
                     f"Unknown column {node.name!r}. Columns are: {', '.join(columns)}. "
                     'Quote names with spaces or symbols in double quotes, e.g. "Sign Up Dt".'
