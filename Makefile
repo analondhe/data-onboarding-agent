@@ -11,8 +11,9 @@ seed:
 	rm -rf evals/cases
 	$(UV) run python -m evals.corrupt all --seed $(SEED) --rows $(CASE_ROWS) --clean-dir data/clean --out evals/cases
 
+## Run all tests; tools/ must stay at 80% line coverage or above
 test:
-	$(UV) run pytest
+	$(UV) run pytest --cov=tools --cov-report=term-missing --cov-fail-under=80
 
 lint:
 	$(UV) run ruff check .

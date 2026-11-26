@@ -23,3 +23,19 @@ One line per choice the spec left open.
 - **Case layout:** `evals/cases/<case_id>/` holds `messy.csv`, `clean.csv` (the sampled clean rows, used as truth for cell accuracy), and `answer_key.json`.
 - **Case plan:** each table's 10 cases cycle through all 10 corruption types as the primary one, plus 0–3 random extras, so every type appears at least once per table.
 - **Makefile:** only targets that work today (`seed`, `test`, `lint`, `format`). `up`, `down`, `eval`, `eval-smoke`, and `onboard` are added in the milestones that implement them.
+
+## Milestone 2
+
+- **Added dependencies:** `sqlglot` and `pydantic`, both listed in §4 of the spec. Tool results are Pydantic models, so the agent and the MCP server can serialize them to JSON.
+- **Extra module:** `tools/warehouse.py` owns the per-run DuckDB file, loading files into `raw`, and the file registry. Profiling and transforms both depend on it.
+- **Tool metadata lives in the warehouse:** `meta.files` and `meta.column_profiles` sit in the run's DuckDB file, so the tools work on DuckDB alone (in-process or over MCP). The app database copies them from Milestone 3 onward.
+- **file_id:** the first 16 hex characters of the file's sha256. Loading identical content again, even under another name, returns the existing file and creates no new table.
+- **Raw tables:** `raw.<sanitized stem>` (`_2`, `_3`, … if the name is taken), every column text, plus `_row` = 1-based source row number. A source column named `_row` is rejected.
+- **Supported inputs (for now):** `.csv`, `.tsv`, `.txt` (delimiter auto-detected, UTF-8) and `.parquet`. Upload limits and encoding handling come with the API in Milestone 5.
+- **Nulls:** empty and whitespace-only cells count as null. Text such as `N/A`, `NULL`, `-` is reported separately as `null_like_count` and is left out when inferring types.
+- **Type inference:** the type matching the largest share of real values wins (ties go to the more specific type: boolean, integer, decimal, date, timestamp). Below 50%, the column is `varchar`. `type_match_rate` reports the share. Only ISO dates count as `date`; other formats show up in patterns.
+- **Patterns:** named shapes first (date formats, numbers, currency, booleans, email, null-like text), else a generic shape (`CUS-000001` → `A-999999`). Leading or trailing whitespace adds `(padded)`. The top 12 shapes are kept and the rest summed under `other shapes`. Slash dates are named `MM/DD/YYYY` or `DD/MM/YYYY` only when some value in the column settles the order; otherwise `NN/NN/YYYY`.
+- **sample_rows:** `n` above 20 is capped at 20, not rejected. Rows are picked by `hash(_row)` (spread across the file, the same on every call) and returned in source order. Cells longer than 200 characters are truncated.
+- **SQL safety:** model SQL is parsed with sqlglot and must be one expression (no statements, subqueries, table references, `*`, aggregates, window functions, lambdas or parameters). It may only use bare column names from the file, and functions that read files, settings, or the catalog, or that are not deterministic, are refused. The SQL sqlglot regenerates (without comments) is what runs, on a read-only connection with external access disabled. `sample_rows(where=...)` uses the same check.
+- **test_transform:** a row counts as input when any referenced column is non-blank. `success_rate = converted / non_null_input`; failures are split into `null_output` (the expression returned NULL) and `cast_failed` (output does not cast to the target type), with up to 5 examples in row order. An expression that errors at runtime (e.g. a strict `::date`) is reported as a tool error suggesting `try_cast`/`try_strptime`.
+- **Coverage gate:** `make test` fails if `tools/` line coverage drops below 80%.

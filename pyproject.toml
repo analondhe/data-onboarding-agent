@@ -6,7 +6,9 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "duckdb>=2.0.0",
     "faker>=40.54.0",
+    "pydantic>=2.14.4",
     "pyyaml>=6.0.3",
+    "sqlglot>=30.35.0",
 ]
 
 [dependency-groups]
