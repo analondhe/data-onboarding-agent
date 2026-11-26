@@ -16,6 +16,7 @@ from evals.corrupt import (
     EXTRA_COLUMNS,
     JUNK_TOKENS,
     MERGE_PAIRS,
+    NAMING_CORRUPTIONS,
     NULL_TOKENS,
     CorruptedTable,
     InfeasibleCorruptionError,
@@ -48,6 +49,11 @@ def clean_values(clean_rows, table: str, target: str) -> list[str]:
 def only_defect(result: CorruptedTable, defect_type: str) -> dict:
     [defect] = [d for d in result.answer_key["defects"] if d["type"] == defect_type]
     return defect
+
+
+def changed_rows(messy: list[str], clean: list[str]) -> list[int]:
+    """1-based row numbers where the messy value differs from the clean one."""
+    return [i + 1 for i, (m, c) in enumerate(zip(messy, clean, strict=True)) if m != c]
 
 
 def parse_date(value: str) -> date:
@@ -101,6 +107,12 @@ def test_answer_key_accounts_for_every_column_and_row(clean_rows, schemas, table
     for defect in key["defects"]:
         assert defect["source_column"] is None or defect["source_column"] in result.header
         assert defect["affected_rows"] > 0
+        if defect["rows"] is None:  # column-wide defect
+            assert defect["affected_rows"] == key["messy_rows"]
+        else:
+            assert defect["rows"] == sorted(set(defect["rows"]))
+            assert len(defect["rows"]) == defect["affected_rows"]
+            assert defect["rows"][0] >= 1 and defect["rows"][-1] <= key["messy_rows"]
 
 
 @pytest.mark.parametrize("corruption", CORRUPTIONS)
@@ -148,8 +160,7 @@ def test_mixed_date_formats_round_trip_to_clean_dates(clean_rows, schemas):
     messy = messy_values(result, defect["source_column"])
     clean = clean_values(clean_rows, "invoices", target)
 
-    changed = [i for i, (m, c) in enumerate(zip(messy, clean, strict=True)) if m != c]
-    assert len(changed) == defect["affected_rows"]
+    assert changed_rows(messy, clean) == defect["rows"]
     assert all(
         parse_date(m) == date.fromisoformat(c) for m, c in zip(messy, clean, strict=True) if c
     )
@@ -164,10 +175,10 @@ def test_type_noise_numbers_parse_back_except_junk(clean_rows, schemas):
     messy = messy_values(result, defect["source_column"])
     clean = clean_values(clean_rows, "subscriptions", target)
 
+    assert changed_rows(messy, clean) == defect["rows"]
     changed = [(m, c) for m, c in zip(messy, clean, strict=True) if m != c]
-    assert len(changed) == defect["affected_rows"]
-    junk = [m for m, _ in changed if m in JUNK_TOKENS]
-    assert len(junk) == defect["details"]["unparseable_rows"]
+    junk_rows = [i + 1 for i, m in enumerate(messy) if m in JUNK_TOKENS]
+    assert junk_rows == defect["details"]["unparseable_rows"]
     for m, c in changed:
         if m not in JUNK_TOKENS:
             assert parse_number(m) == Decimal(c), (m, c)
@@ -179,8 +190,8 @@ def test_type_noise_booleans_parse_back(clean_rows, schemas):
     assert defect["target_columns"] == ["is_active"]
     messy = messy_values(result, defect["source_column"])
     clean = clean_values(clean_rows, "customers", "is_active")
+    assert changed_rows(messy, clean) == defect["rows"]
     changed = [(m, c) for m, c in zip(messy, clean, strict=True) if m != c]
-    assert len(changed) == defect["affected_rows"]
     assert all(parse_bool(m) == c for m, c in changed if m not in JUNK_TOKENS)
 
 
@@ -205,6 +216,12 @@ def test_duplicates_repeat_existing_rows(clean_rows, schemas):
     # Every messy row, duplicate or not, matches its clean row once casing/whitespace is ignored.
     for row in result.rows:
         assert normalize(row) == clean_by_key[row[key_index].strip().upper()]
+    # Row numbers point at the later copies; duplicate_of points each one at its original.
+    pairs = defect["details"]["duplicate_of"]
+    assert [dup for dup, _ in pairs] == defect["rows"]
+    for dup, original in pairs:
+        assert original < dup
+        assert normalize(result.rows[dup - 1]) == normalize(result.rows[original - 1])
 
 
 def test_null_variants_only_touch_null_cells(clean_rows, schemas):
@@ -215,7 +232,7 @@ def test_null_variants_only_touch_null_cells(clean_rows, schemas):
     clean = clean_values(clean_rows, "subscriptions", "canceled_at")
     for m, c in zip(messy, clean, strict=True):
         assert m in NULL_TOKENS if c == "" else m == c
-    assert sum(1 for m, c in zip(messy, clean, strict=True) if m != c) == defect["affected_rows"]
+    assert changed_rows(messy, clean) == defect["rows"]
     assert sum(defect["details"]["tokens"].values()) == clean.count("")
 
 
@@ -229,8 +246,8 @@ def test_value_drift_variants_map_back_to_allowed_values(clean_rows, schemas):
     variants = defect["details"]["variants"]
     messy = messy_values(result, defect["source_column"])
     clean = clean_values(clean_rows, "invoices", target)
+    assert changed_rows(messy, clean) == defect["rows"]
     changed = [(m, c) for m, c in zip(messy, clean, strict=True) if m != c]
-    assert len(changed) == defect["affected_rows"]
     assert all(variants[m] == c for m, c in changed)
     assert not set(variants) & set(allowed)
 
@@ -309,6 +326,20 @@ def test_plan_covers_every_corruption_per_table_with_one_to_four_each():
         assert all(1 <= len(c) <= 4 and len(set(c)) == len(c) for c in cases)
 
 
+@pytest.mark.parametrize("seed", [1, 42, 2024])
+def test_plan_changes_column_names_in_at_least_two_thirds_of_cases(seed):
+    plan = plan_cases(seed=seed)
+    for table in TABLES:
+        cases = [corruptions for _, t, _, corruptions in plan if t == table]
+        renamed = [c for c in cases if set(c) & set(NAMING_CORRUPTIONS)]
+        assert len(renamed) >= 7
+        # Renames sit right after the primary, so dropping infeasible extras never removes them.
+        for corruptions in renamed:
+            naming = [i for i, c in enumerate(corruptions) if c in NAMING_CORRUPTIONS]
+            assert naming == list(range(naming[0], naming[0] + len(naming)))
+            assert naming[0] <= 1
+
+
 def test_build_cases_is_deterministic_and_complete(tmp_path: Path):
     write_tables(generate(seed=5, customers=200), tmp_path / "clean")
     first = build_cases(tmp_path / "clean", tmp_path / "a", seed=8, rows=150)
@@ -323,3 +354,4 @@ def test_build_cases_is_deterministic_and_complete(tmp_path: Path):
         assert stored == key
         assert (case_a / stored["clean_file"]).is_file()
         assert 1 <= len(stored["corruptions"]) <= 4
+        assert stored["names_changed"] == bool(set(stored["corruptions"]) & set(NAMING_CORRUPTIONS))

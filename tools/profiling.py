@@ -24,6 +24,7 @@ from tools.warehouse import (
     loaded_files,
     quote_ident,
     resolve_column,
+    run_guarded,
     source_columns,
 )
 
@@ -287,12 +288,11 @@ def sample_rows(wh: Warehouse, file_id: str, n: int = 10, where: str | None = No
         if where is not None and where.strip():
             filter_sql = f"WHERE ({validate_expression(where, source_columns(con, file))})"
         try:
-            relation = con.execute(
+            names, rows = run_guarded(
+                con,
                 f"SELECT * FROM (SELECT * FROM raw.{quote_ident(file.table_name)} {filter_sql} "
-                f"ORDER BY hash({ROW_COLUMN}) LIMIT {n}) ORDER BY {ROW_COLUMN}"
+                f"ORDER BY hash({ROW_COLUMN}) LIMIT {n}) ORDER BY {ROW_COLUMN}",
             )
-            names = [d[0] for d in relation.description]
-            rows = relation.fetchall()
         except duckdb.Error as exc:
             raise ToolError(f"The where condition failed when run on the data: {exc}") from exc
     return SampleRows(

@@ -16,6 +16,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import random
 import re
 from collections import Counter
@@ -43,6 +44,8 @@ CORRUPTIONS = (
     "extra_columns",
     "drop_required",
 )
+# Corruptions that change column names, so mapping cannot rely on exact name matches.
+NAMING_CORRUPTIONS = ("rename_columns", "cryptic_names")
 
 # Application order. Row-level duplication runs first so later per-column counts cover the
 # final rows; value corruptions claim their columns before structural ones; names change last.
@@ -178,6 +181,11 @@ class Column:
         return self.targets[0]
 
 
+def row_numbers(positions: list[int]) -> list[int]:
+    """Convert 0-based positions in the messy file to 1-based row numbers (the ``_row`` value)."""
+    return [p + 1 for p in positions]
+
+
 @dataclass
 class Defect:
     type: DefectType
@@ -185,6 +193,7 @@ class Defect:
     target_columns: list[str]
     affected_rows: int
     details: dict[str, Any] = field(default_factory=dict)
+    rows: list[int] | None = None  # 0-based positions; None when the defect is column-wide
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -192,6 +201,7 @@ class Defect:
             "source_column": self.column.name if self.column else None,
             "target_columns": self.target_columns,
             "affected_rows": self.affected_rows,
+            "rows": None if self.rows is None else row_numbers(self.rows),
             "details": self.details,
         }
 
@@ -278,7 +288,8 @@ def _duplicates(w: Work) -> None:
         if w.spec(col.target)["type"] == "varchar" and "allowed_values" not in w.spec(col.target)
     ]
     perturbed = 0
-    for pos in (p for p, dupe in enumerate(is_dupe) if dupe):
+    dupe_positions = [p for p, dupe in enumerate(is_dupe) if dupe]
+    for pos in dupe_positions:
         if w.rng.random() >= 0.5:
             continue
         col = w.rng.choice(text_cols)
@@ -289,14 +300,24 @@ def _duplicates(w: Work) -> None:
         if value and options:
             col.values[pos] = w.rng.choice(options)
             perturbed += 1
+    first_position = {}
+    for pos, src in enumerate(order):
+        first_position.setdefault(src, pos)
     key_col = next(col for col in w.columns if col.target == w.key)
     w.defects.append(
         Defect(
             DefectType.DUPLICATE_ROWS,
             key_col,
             [w.key],
-            len(sources),
-            {"exact": len(sources) - perturbed, "with_casing_or_whitespace": perturbed},
+            len(dupe_positions),
+            {
+                "exact": len(dupe_positions) - perturbed,
+                "with_casing_or_whitespace": perturbed,
+                "duplicate_of": [
+                    [pos + 1, first_position[order[pos]] + 1] for pos in dupe_positions
+                ],
+            },
+            rows=dupe_positions,
         )
     )
 
@@ -308,19 +329,22 @@ def _null_variants(w: Work) -> None:
         w.candidates(lambda spec, c: not spec["required"] and "" in c.values),
     )
     tokens: Counter[str] = Counter()
+    rows = []
     for i, value in enumerate(col.values):
         if value == "":
             token = w.rng.choice(NULL_TOKENS)
             col.values[i] = token
             tokens[token] += 1
-    affected = sum(count for token, count in tokens.items() if token != "")
+            if token:
+                rows.append(i)
     w.defects.append(
         Defect(
             DefectType.NULL_VARIANTS,
             col,
             [col.target],
-            affected,
+            len(rows),
             {"tokens": dict(sorted(tokens.items()))},
+            rows=rows,
         )
     )
 
@@ -343,18 +367,25 @@ def _type_noise(w: Work) -> None:
     )
     kind = w.spec(col.target)["type"]
     rows = w.sample_rows(col, 0.1, 0.4)
-    junk = 0
+    junk = []
     for i in rows:
         value = col.values[i]
         if w.rng.random() < 0.02:
             col.values[i] = w.rng.choice(JUNK_TOKENS)
-            junk += 1
+            junk.append(i)
         elif kind == "boolean":
             col.values[i] = w.rng.choice(TRUE_VARIANTS if value == "true" else FALSE_VARIANTS)
         else:
             col.values[i] = _noisy_number(w, value, kind)
     w.defects.append(
-        Defect(DefectType.TYPE_NOISE, col, [col.target], len(rows), {"unparseable_rows": junk})
+        Defect(
+            DefectType.TYPE_NOISE,
+            col,
+            [col.target],
+            len(rows),
+            {"unparseable_rows": row_numbers(junk)},
+            rows=rows,
+        )
     )
 
 
@@ -376,6 +407,7 @@ def _value_drift(w: Work) -> None:
             [col.target],
             len(rows),
             {"variants": dict(sorted(variants.items()))},
+            rows=rows,
         )
     )
 
@@ -402,6 +434,7 @@ def _mixed_date_formats(w: Work) -> None:
             [col.target],
             len(rows),
             {"formats": dict(sorted(counts.items()))},
+            rows=rows,
         )
     )
 
@@ -596,6 +629,7 @@ def corrupt_table(
         "table": schema["table"],
         "seed": seed,
         "corruptions": list(corruptions),
+        "names_changed": bool(set(corruptions) & set(NAMING_CORRUPTIONS)),
         "key_column": key_column(schema),
         "clean_rows": len(clean_rows),
         "messy_rows": work.n_rows,
@@ -658,17 +692,23 @@ def plan_cases(seed: int, per_table: int = 10) -> list[tuple[str, str, int, list
 
     Each table's cases cycle through every corruption type as the primary corruption, so with
     ``per_table >= len(CORRUPTIONS)`` each type appears at least once per table. Up to three
-    extra corruptions are added at random, for one to four per case.
+    extra corruptions are added at random, for one to four per case. At least two thirds of
+    each table's cases change column names, the hard part of mapping.
     """
     rng = random.Random(seed)
     plan = []
     for table in TABLES:
         primaries = list(CORRUPTIONS)
         rng.shuffle(primaries)
+        must_rename = set(rng.sample(range(per_table), math.ceil(per_table * 2 / 3)))
         for i in range(per_table):
             primary = primaries[i % len(primaries)]
             others = [c for c in CORRUPTIONS if c != primary]
             extras = rng.sample(others, rng.randint(0, 3))
+            if i in must_rename and not {primary, *extras} & set(NAMING_CORRUPTIONS):
+                extras = [rng.choice(NAMING_CORRUPTIONS), *extras][:3]
+            # Renames never fail, so keep them ahead of extras that build_cases may drop.
+            extras.sort(key=lambda c: c not in NAMING_CORRUPTIONS)
             plan.append((f"{table}_{i + 1:02d}", table, rng.randrange(2**31), [primary, *extras]))
     return plan
 

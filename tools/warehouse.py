@@ -10,10 +10,12 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import duckdb
 from pydantic import BaseModel
@@ -83,15 +85,20 @@ class Warehouse:
         """Open a short-lived connection.
 
         Read-only connections also disable external access, so SQL written by the model can
-        read only this warehouse: no files, no network, no attaching other databases. DuckDB
-        refuses a read-only and a read-write connection to the same file at the same time, so
-        callers must not nest them.
+        read only this warehouse: no files, no network, no attaching other databases. They are
+        capped at ``TOOL_MEMORY_LIMIT``. DuckDB refuses a read-only and a read-write connection
+        to the same file at the same time, so callers must not nest them.
         """
         if read_only:
             if not self.path.exists():
                 raise ToolError(f"Run {self.run_id!r} has no loaded files yet")
             con = duckdb.connect(
-                str(self.path), read_only=True, config={"enable_external_access": False}
+                str(self.path),
+                read_only=True,
+                config={
+                    "enable_external_access": False,
+                    "memory_limit": os.environ.get("TOOL_MEMORY_LIMIT", "2GB"),
+                },
             )
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -101,6 +108,33 @@ class Warehouse:
             yield con
         finally:
             con.close()
+
+
+def run_guarded(
+    con: duckdb.DuckDBPyConnection, sql: str
+) -> tuple[list[str], list[tuple[Any, ...]]]:
+    """Run model-influenced SQL with a time limit; return (column names, rows).
+
+    The query is interrupted after ``TOOL_QUERY_TIMEOUT_SECONDS``. Timeouts and running out of
+    memory become ToolErrors the model can act on; other DuckDB errors propagate.
+    """
+    timeout = float(os.environ.get("TOOL_QUERY_TIMEOUT_SECONDS", "60"))
+    timer = threading.Timer(timeout, con.interrupt)
+    timer.start()
+    try:
+        result = con.execute(sql)
+        return [d[0] for d in result.description], result.fetchall()
+    except duckdb.InterruptException as exc:
+        raise ToolError(
+            f"The query took longer than {timeout:g} seconds and was stopped. "
+            "Simplify the expression."
+        ) from exc
+    except duckdb.OutOfMemoryException as exc:
+        raise ToolError(
+            "The query ran out of memory and was stopped. Avoid building very large values."
+        ) from exc
+    finally:
+        timer.cancel()
 
 
 def _sha256(path: Path) -> str:

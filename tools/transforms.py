@@ -22,6 +22,7 @@ from tools.warehouse import (
     Warehouse,
     get_file,
     quote_ident,
+    run_guarded,
     source_columns,
 )
 
@@ -39,11 +40,14 @@ _FORBIDDEN_NODES: dict[type[exp.Expression], str] = {
     exp.Placeholder: "parameters",
     exp.Lambda: "lambda functions",
 }
-# Functions that read outside the row (files, settings, catalog) or are not deterministic.
+# Functions that read outside the row (files, settings, catalog), are not deterministic, or
+# build arbitrarily large values. DuckDB's memory_limit does not cover per-row temporaries,
+# so repeat() and list builders are refused here; the query timeout backs this up.
 _FORBIDDEN_FUNCTION = re.compile(
     r"(read_|parquet_|sniff_|duckdb_|pragma_|iceberg_|delta_|json_execute|query"
     r"|glob$|getenv$|current_|which_secret|setseed|random|rand$|uuid|gen_random_uuid"
-    r"|nextval|currval|now$|today$|get_current|localtime|transaction_timestamp)"
+    r"|nextval|currval|now$|today$|get_current|localtime|transaction_timestamp"
+    r"|repeat$|range$|generate_series|list_resize|array_resize)"
 )
 # Target types a transform may produce, keyed by sqlglot type.
 _ALLOWED_TYPES = {
@@ -175,16 +179,18 @@ def test_transform(
             f"FROM raw.{quote_ident(file.table_name)}"
         )
         try:
-            [(rows, non_null, converted, null_output)] = con.execute(
+            _, [(rows, non_null, converted, null_output)] = run_guarded(
+                con,
                 "SELECT count(*), count(*) FILTER (__has_input), "
                 "count(*) FILTER (__has_input AND __ok), "
                 "count(*) FILTER (__has_input AND __out IS NULL) "
-                f"FROM ({evaluated})"
-            ).fetchall()
-            failing = con.execute(
+                f"FROM ({evaluated})",
+            )
+            _, failing = run_guarded(
+                con,
                 f"SELECT * FROM ({evaluated}) WHERE __has_input AND NOT __ok "
-                f"ORDER BY {ROW_COLUMN} LIMIT {MAX_FAILING_EXAMPLES}"
-            ).fetchall()
+                f"ORDER BY {ROW_COLUMN} LIMIT {MAX_FAILING_EXAMPLES}",
+            )
         except duckdb.Error as exc:
             raise ToolError(
                 f"The expression failed when run on the data: {exc}. Use try_cast or "

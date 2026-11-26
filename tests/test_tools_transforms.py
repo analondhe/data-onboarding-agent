@@ -10,7 +10,7 @@ from tools.transforms import (
     validate_expression,
     validate_target_type,
 )
-from tools.warehouse import ToolError
+from tools.warehouse import ToolError, run_guarded
 
 COLUMNS = ["x", "d", "Sign Up Dt"]
 
@@ -69,6 +69,9 @@ def test_accepts_single_row_expressions(sql, normalized):
         "now()",
         "current_date",
         "nextval('seq')",
+        "md5(repeat(x, 100000000))",
+        "len(range(100000000))",
+        "len(generate_series(1, 100000000))",
         "list_transform([1], y -> y + 1)",
         "source.x",
         "*",
@@ -184,3 +187,23 @@ def test_unknown_file_is_a_tool_error(wh, load_csv):
     load_csv(DATES)
     with pytest.raises(ToolError, match="Unknown file_id"):
         test_transform(wh, "missing", "d", "date")
+
+
+def test_queries_that_exceed_the_memory_limit_are_stopped(wh, load_csv, monkeypatch):
+    monkeypatch.setenv("TOOL_MEMORY_LIMIT", "64MB")
+    load_csv("x\n1\n")
+    with (
+        wh.connect(read_only=True) as con,
+        pytest.raises(ToolError, match="ran out of memory"),
+    ):
+        run_guarded(con, "SELECT string_agg(repeat('abc', 50000000), '') FROM range(3)")
+
+
+def test_slow_queries_are_interrupted(wh, load_csv, monkeypatch):
+    monkeypatch.setenv("TOOL_QUERY_TIMEOUT_SECONDS", "0.3")
+    load_csv("x\n1\n")
+    with (
+        wh.connect(read_only=True) as con,
+        pytest.raises(ToolError, match=r"longer than 0\.3 seconds"),
+    ):
+        run_guarded(con, "SELECT count(*) FROM range(1000000000) a, range(1000000000) b")
