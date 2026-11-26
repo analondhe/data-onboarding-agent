@@ -19,6 +19,10 @@ jobs:
         run: make lint
       - name: Test
         run: make test
+      - name: Generate eval cases
+        run: make seed
+      - name: Eval smoke test (FakeLLM)
+        run: make eval-smoke
 
   secret-scan:
     runs-on: ubuntu-24.04

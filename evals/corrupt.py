@@ -24,12 +24,12 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 from faker import Faker
 
+from agent.defects import DefectType
 from datagen.schemas import TABLES, column_names, key_column, load_schema
 
 CORRUPTIONS = (
@@ -61,18 +61,6 @@ APPLY_ORDER = (
     "cryptic_names",
     "rename_columns",
 )
-
-
-class DefectType(StrEnum):
-    """Fixed defect vocabulary shared by answer keys and (later) the agent's defect reports."""
-
-    DUPLICATE_ROWS = "duplicate_rows"
-    NULL_VARIANTS = "null_variants"
-    TYPE_NOISE = "type_noise"
-    VALUE_DRIFT = "value_drift"
-    MIXED_DATE_FORMATS = "mixed_date_formats"
-    MERGED_COLUMN = "merged_column"
-    MISSING_REQUIRED_COLUMN = "missing_required_column"
 
 
 class InfeasibleCorruptionError(ValueError):
