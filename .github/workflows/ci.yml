@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.4.0  # setup-uv publishes no floating major tags
       - name: Install locked dependencies
         run: uv sync --locked
       - name: Lint
