@@ -92,6 +92,12 @@ def test_unknown_column_error_lists_columns_and_quoting_hint():
         validate_expression("Sign + 1", COLUMNS)
 
 
+def test_text_in_double_quotes_gets_a_single_quote_hint():
+    """Models write split_part("c", "|", 1); SQL reads "|" as a column name."""
+    with pytest.raises(UnsafeSQLError, match=r"Write text values in single quotes, e\.g\. '\|'"):
+        validate_expression('split_part(x, "|", 1)', COLUMNS)
+
+
 @pytest.mark.parametrize(
     ("given", "normalized"),
     [

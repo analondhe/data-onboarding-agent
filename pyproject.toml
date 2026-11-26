@@ -4,10 +4,14 @@ version = "0.1.0"
 description = "Agent that maps messy customer data files onto a target schema and builds tested dbt tables"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "alembic>=1.20.1",
     "duckdb>=2.0.0",
     "faker>=40.54.0",
+    "mlflow-skinny>=3.18.0",
+    "openai>=3.60.0",
     "pydantic>=2.14.4",
     "pyyaml>=6.0.3",
+    "sqlalchemy>=2.1.9",
     "sqlglot>=30.35.0",
 ]
 
@@ -25,6 +29,10 @@ package = false
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
+filterwarnings = [
+    # mlflow's tracking store uses an SQLAlchemy loader option deprecated in SQLAlchemy 2.1
+    "ignore:The ``noload`` loader strategy is deprecated:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100

@@ -1,0 +1,5 @@
+# qwen3:8b with a 16k context window. Ollama serves 4096 tokens by default and silently drops
+# the start of longer conversations; the Map phase starts at about 3.4k tokens before any tool
+# results. Build with `make model`, then set LLM_MODEL=qwen3-8b-16k.
+FROM qwen3:8b
+PARAMETER num_ctx 16384
