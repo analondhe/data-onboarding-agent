@@ -17,7 +17,14 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from agent.llm import LLM, LLMTimeoutError, Message, ToolCall, complete_with_retries
+from agent.llm import (
+    LLM,
+    LLMError,
+    LLMUnavailableError,
+    Message,
+    ToolCall,
+    complete_with_retries,
+)
 from agent.tracing import Tracer
 from tools.warehouse import ToolError
 
@@ -142,7 +149,7 @@ def run_loop(
     max_steps: int,
     tracer: Tracer,
     retries: int = 3,
-    backoff_seconds: float = 2.0,
+    backoff_seconds: float = 5.0,
     sleep: Callable[[float], None] = time.sleep,
 ) -> LoopResult:
     by_name = {tool.name: tool for tool in tools}
@@ -162,9 +169,13 @@ def run_loop(
                     llm, messages, definitions, retries=retries,
                     backoff_seconds=backoff_seconds, sleep=sleep,
                 )  # fmt: skip
-            except LLMTimeoutError as exc:
+            except LLMUnavailableError as exc:
                 span.set_attributes({"error": str(exc)})
                 result.reason = f"The model did not respond after {retries + 1} attempts: {exc}"
+                return result
+            except LLMError as exc:
+                span.set_attributes({"error": str(exc)})
+                result.reason = f"The model call failed: {exc}"
                 return result
             latency_ms = round((time.monotonic() - started) * 1000)
             span.set_attributes(

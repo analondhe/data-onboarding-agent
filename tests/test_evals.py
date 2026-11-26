@@ -139,6 +139,7 @@ def test_answer_key_run_scores_perfectly_and_writes_a_scorecard(tmp_path: Path):
         llm_api_key="",
         llm_reasoning_effort=None,
         llm_timeout_seconds=1,
+        llm_retry_backoff_seconds=0,
         database_url="unused",
         mlflow_tracking_uri=f"sqlite:///{tmp_path / 'mlflow.db'}",
         data_dir=tmp_path / "data",

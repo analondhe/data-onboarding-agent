@@ -176,7 +176,7 @@ def map_phase(
     max_steps: int,
     tracer: Tracer,
     retries: int = 3,
-    backoff_seconds: float = 2.0,
+    backoff_seconds: float = 5.0,
     sleep: Callable[[float], None] = time.sleep,
 ) -> MapOutcome:
     accepted: list[MappingSubmission] = []

@@ -19,8 +19,12 @@ from agent.settings import Settings
 Message = dict[str, Any]
 
 
-class LLMTimeoutError(Exception):
-    """The model did not answer in time (or could not be reached)."""
+class LLMError(Exception):
+    """The model call failed and retrying will not help (bad key, unknown model, no credit)."""
+
+
+class LLMUnavailableError(LLMError):
+    """The model did not answer: timeout, connection error, rate limit, or server error."""
 
 
 @dataclass(frozen=True)
@@ -57,7 +61,7 @@ class LLM(Protocol):
     model: str
 
     def complete(self, messages: list[Message], tools: list[dict[str, Any]]) -> LLMResponse:
-        """One model call. Raises LLMTimeoutError when the model does not answer in time."""
+        """One model call. Raises LLMUnavailableError when retrying may help, LLMError if not."""
         ...
 
 
@@ -102,8 +106,17 @@ class OpenAICompatibleLLM:
                 temperature=0,
                 **extra,
             )
-        except (openai.APITimeoutError, openai.APIConnectionError) as exc:
-            raise LLMTimeoutError(f"{type(exc).__name__}: {exc}") from exc
+        except (
+            openai.APITimeoutError,
+            openai.APIConnectionError,
+            openai.RateLimitError,
+            openai.InternalServerError,
+        ) as exc:
+            raise LLMUnavailableError(f"{type(exc).__name__}: {exc}") from exc
+        except openai.APIError as exc:
+            raise LLMError(f"{type(exc).__name__}: {exc}") from exc
+        if not response.choices:
+            raise LLMUnavailableError(f"empty response from {self.model}")
         message = response.choices[0].message
         usage = response.usage
         return LLMResponse(
@@ -125,14 +138,14 @@ def complete_with_retries(
     tools: list[dict[str, Any]],
     *,
     retries: int = 3,
-    backoff_seconds: float = 2.0,
+    backoff_seconds: float = 5.0,
     sleep: Callable[[float], None] = time.sleep,
 ) -> LLMResponse:
-    """Call the model, retrying timeouts ``retries`` times with exponential backoff."""
+    """Call the model, retrying unavailability ``retries`` times with exponential backoff."""
     for attempt in range(retries + 1):
         try:
             return llm.complete(messages, tools)
-        except LLMTimeoutError:
+        except LLMUnavailableError:
             if attempt == retries:
                 raise
             sleep(backoff_seconds * 2**attempt)
@@ -148,6 +161,13 @@ class FakeTimeout:
 
 
 @dataclass(frozen=True)
+class FakeError:
+    """A scripted step that fails permanently, like a rejected API key."""
+
+    message: str = "scripted error"
+
+
+@dataclass(frozen=True)
 class FakeReply:
     """A scripted answer. Each tool call is (name, arguments); a str argument is sent as is,
     so it can be malformed JSON."""
@@ -156,7 +176,7 @@ class FakeReply:
     content: str | None = None
 
 
-FakeStep = FakeReply | FakeTimeout
+FakeStep = FakeReply | FakeTimeout | FakeError
 Responder = Callable[[list[Message]], FakeStep]
 
 
@@ -179,7 +199,9 @@ class FakeLLM:
             except StopIteration:
                 raise AssertionError("FakeLLM script ran out of steps") from None
         if isinstance(step, FakeTimeout):
-            raise LLMTimeoutError("scripted timeout")
+            raise LLMUnavailableError("scripted timeout")
+        if isinstance(step, FakeError):
+            raise LLMError(step.message)
         n = len(self.calls)
         return LLMResponse(
             content=step.content,

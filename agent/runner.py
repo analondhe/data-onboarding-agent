@@ -129,7 +129,6 @@ def onboard(
     paths: list[Path],
     run_id: str | None = None,
     retries: int = 3,
-    backoff_seconds: float = 2.0,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Run:
     schema = load_schema(schema_name)
@@ -162,7 +161,8 @@ def onboard(
                         llm, wh, file, profile, schema,
                         threshold=settings.review_confidence_threshold,
                         max_steps=settings.agent_max_steps, tracer=tracer,
-                        retries=retries, backoff_seconds=backoff_seconds, sleep=sleep,
+                        retries=retries, backoff_seconds=settings.llm_retry_backoff_seconds,
+                        sleep=sleep,
                     )  # fmt: skip
                 if outcome.loop is not None:
                     run.model_calls += outcome.loop.steps

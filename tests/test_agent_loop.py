@@ -3,7 +3,14 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from agent.llm import FakeLLM, FakeReply, FakeTimeout, LLMTimeoutError, complete_with_retries
+from agent.llm import (
+    FakeError,
+    FakeLLM,
+    FakeReply,
+    FakeTimeout,
+    LLMUnavailableError,
+    complete_with_retries,
+)
 from agent.loop import SubmitOutcome, Tool, inline_schema, run_loop
 from agent.tracing import Tracer
 from tools.warehouse import ToolError
@@ -130,8 +137,17 @@ def test_step_limit_ends_the_run_cleanly():
 
 
 def test_complete_with_retries_reraises_after_the_last_attempt():
-    with pytest.raises(LLMTimeoutError):
+    with pytest.raises(LLMUnavailableError):
         complete_with_retries(FakeLLM([FakeTimeout()] * 2), [], [], retries=1, sleep=lambda s: None)
+
+
+def test_permanent_errors_are_not_retried():
+    result, llm, sleeps = run([FakeError("AuthenticationError: bad key")])
+    assert (result.status, result.reason) == (
+        "failed",
+        "The model call failed: AuthenticationError: bad key",
+    )
+    assert (len(llm.calls), sleeps) == (1, [])
 
 
 def test_tool_definitions_are_flat_json_schemas():

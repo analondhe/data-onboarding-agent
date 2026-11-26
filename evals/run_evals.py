@@ -325,9 +325,6 @@ def run_evals(
     settings: Settings,
     make_llm: Callable[[dict[str, Any]], LLM],
     results_dir: Path,
-    *,
-    retries: int = 3,
-    backoff_seconds: float = 2.0,
 ) -> tuple[dict[str, Any], list[CaseScore], Path]:
     """Run every case; return (summary, per-case scores, markdown scorecard path)."""
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -363,8 +360,6 @@ def run_evals(
                     schema_name=key["table"],
                     paths=[case_dir / key["messy_file"]],
                     run_id=f"eval-{timestamp}-{key['case_id']}",
-                    retries=retries,
-                    backoff_seconds=backoff_seconds,
                 )
                 score = score_case(key, run, settings.review_confidence_threshold)
             scores.append(score)

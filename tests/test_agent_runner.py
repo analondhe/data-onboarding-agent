@@ -6,7 +6,7 @@ from pathlib import Path
 import mlflow
 import pytest
 
-from agent.llm import FakeLLM, FakeReply, FakeTimeout
+from agent.llm import FakeError, FakeLLM, FakeReply, FakeTimeout
 from agent.runner import onboard
 from agent.settings import Settings
 from agent.tracing import Tracer
@@ -31,6 +31,7 @@ def settings(tmp_path: Path, tracking_uri: str) -> Settings:
         llm_api_key="unused",
         llm_reasoning_effort=None,
         llm_timeout_seconds=1,
+        llm_retry_backoff_seconds=0,
         database_url=f"sqlite:///{tmp_path / 'app.db'}",
         mlflow_tracking_uri=tracking_uri,
         data_dir=tmp_path / "data",
@@ -105,6 +106,17 @@ def test_model_timeouts_fail_the_run_with_a_reason(settings, case):
     assert run.error.startswith("Mapping messy.csv failed: The model did not respond after 4")
     assert run.mappings == []
     assert len(run.files[0].profiles) > 0  # profiling finished before the model was needed
+
+
+def test_permanent_model_error_fails_without_retrying(settings, case):
+    path, _ = case
+    llm = FakeLLM([FakeError("AuthenticationError: invalid API key")])
+    run, _ = run_onboard(settings, llm, path)
+    assert run.status == RunStatus.FAILED
+    assert run.error == (
+        "Mapping messy.csv failed: The model call failed: AuthenticationError: invalid API key"
+    )
+    assert len(llm.calls) == 1
 
 
 def test_step_limit_fails_the_run(settings, case):
