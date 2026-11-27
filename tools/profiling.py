@@ -33,6 +33,7 @@ MAX_SAMPLE_ROWS = 20
 MAX_CELL_CHARS = 200
 MAX_PATTERNS = 12
 TYPE_THRESHOLD = 0.5  # an inferred type must match at least this share of real values
+MAX_LISTED_VALUES = 30  # columns with at most this many distinct values list them all
 
 BOOLEAN_WORDS = ("true", "false", "t", "f", "yes", "no", "y", "n")
 _MONTH = r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
@@ -86,9 +87,13 @@ class ColumnProfile(BaseModel):
     null_rate: float
     null_like_count: int  # text such as "N/A" or "NULL" that means no value
     distinct_count: int
+    # distinct after trimming and lower-casing: below distinct_count means values that differ
+    # only by case or spacing (on a key column, duplicate rows)
+    distinct_ignoring_case: int | None = None
     min: str | None
     max: str | None
     top_values: list[TopValue]
+    all_values: list[TopValue] | None = None  # every value, when there are at most 30
     patterns: dict[str, int]
 
 
@@ -231,9 +236,15 @@ def _profile_column(
         null_rate=round(nulls / rows, 4) if rows else 0.0,
         null_like_count=null_like,
         distinct_count=len(value_counts),
+        distinct_ignoring_case=len({str(val).strip().lower() for val, _ in value_counts}),
         min=_truncate(low),
         max=_truncate(high),
         top_values=[TopValue(value=_truncate(val), count=n) for val, n in value_counts[:5]],
+        all_values=(
+            [TopValue(value=_truncate(val), count=n) for val, n in value_counts]
+            if len(value_counts) <= MAX_LISTED_VALUES
+            else None
+        ),
         patterns=_patterns(value_counts),
     )
 

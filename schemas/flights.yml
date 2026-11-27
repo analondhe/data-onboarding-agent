@@ -1,0 +1,38 @@
+table: flights
+description: One row per flight as reported by one website (Raha benchmark, deep-web flight data)
+columns:
+  - name: tuple_id
+    type: integer
+    required: true
+    unique: true
+    description: Row number of the record in the source file, a whole number starting at 1
+  - name: src
+    type: varchar
+    required: true
+    unique: false
+    description: Short code of the website that reported the flight, such as aa or flightview
+  - name: flight
+    type: varchar
+    required: true
+    unique: false
+    description: Flight identifier made of airline, number, origin and destination, such as AA-3859-IAH-ORD
+  - name: sched_dep_time
+    type: varchar
+    required: false
+    unique: false
+    description: Scheduled departure time as written in the clean data, such as 7:10 a.m.
+  - name: act_dep_time
+    type: varchar
+    required: false
+    unique: false
+    description: Actual departure time, such as 7:16 a.m.
+  - name: sched_arr_time
+    type: varchar
+    required: false
+    unique: false
+    description: Scheduled arrival time, such as 9:40 a.m.
+  - name: act_arr_time
+    type: varchar
+    required: false
+    unique: false
+    description: Actual arrival time, such as 9:32 a.m.

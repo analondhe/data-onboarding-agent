@@ -1,0 +1,58 @@
+table: beers
+description: One row per craft beer, with its brewery (Raha benchmark, Kaggle craft beers data)
+columns:
+  - name: index
+    type: integer
+    required: true
+    unique: true
+    description: Row number of the record in the source file, a whole number starting at 1
+  - name: id
+    type: integer
+    required: true
+    unique: false
+    description: Numeric identifier of the beer
+  - name: beer_name
+    type: varchar
+    required: true
+    unique: false
+    description: Name of the beer, such as Pub Beer or Devil's Cup
+  - name: style
+    type: varchar
+    required: false
+    unique: false
+    description: Beer style, such as American Pale Lager or American IPA
+  - name: ounces
+    type: decimal(6,2)
+    required: false
+    unique: false
+    description: Size of the can or bottle in US fluid ounces, a plain number such as 12 or 16 without the unit
+  - name: abv
+    type: decimal(6,3)
+    required: false
+    unique: false
+    description: Alcohol by volume as a fraction between 0 and 1, such as 0.05 for 5%
+  - name: ibu
+    type: integer
+    required: false
+    unique: false
+    description: International bitterness units, a whole number; empty when unknown
+  - name: brewery_id
+    type: integer
+    required: false
+    unique: false
+    description: Numeric identifier of the brewery
+  - name: brewery_name
+    type: varchar
+    required: false
+    unique: false
+    description: Name of the brewery that makes the beer
+  - name: city
+    type: varchar
+    required: false
+    unique: false
+    description: City of the brewery, without the state
+  - name: state
+    type: varchar
+    required: false
+    unique: false
+    description: Two-letter US state code of the brewery, such as OR or IN

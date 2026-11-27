@@ -40,6 +40,10 @@ class MappingSubmission(BaseModel):
         default_factory=list,
         description="Required target columns that no source column provides",
     )
+    unmapped_targets: list[MissingTarget] = Field(
+        default_factory=list,
+        description="Optional target columns that no source column provides",
+    )
     defects: list[ProposedDefect] = Field(default_factory=list)
 
 
@@ -115,20 +119,53 @@ def validate_submission(
                 f"missing_required: {missing.target_column!r} is also mapped; remove one of them"
             )
         declared_missing.add(missing.target_column)
+    declared_unmapped = set()
+    for unmapped in submission.unmapped_targets:
+        if unmapped.target_column not in targets:
+            errors.append(
+                f"unmapped_targets: unknown target column {unmapped.target_column!r}. "
+                f"Target columns are: {target_list}"
+            )
+        elif unmapped.target_column in seen_targets:
+            errors.append(
+                f"unmapped_targets: {unmapped.target_column!r} is also mapped; remove one of them"
+            )
+        declared_unmapped.add(unmapped.target_column)
 
     for name, column in targets.items():
-        if (
-            column.get("required")
-            and name not in seen_targets
-            and name not in declared_missing
-            and name not in fixed_targets
-        ):
+        if name in seen_targets or name in fixed_targets:
+            continue
+        if column.get("required") and name not in declared_missing:
             errors.append(
                 f"required target column {name!r} has no mapping. Map it, or list it in "
                 "missing_required with a reason if no source column holds it"
             )
+        elif not column.get("required") and mappable is None and name not in declared_unmapped:
+            errors.append(
+                f"optional target column {name!r} has no mapping. Map it if a source column "
+                "holds it (it may be mostly empty), or list it in unmapped_targets with a reason"
+            )
 
-    defects = [_normalize_defect(d, source_columns, targets) for d in submission.defects]
+    mapped_sources = {m.source_column for m in normalized}
+    defects = []
+    for d in submission.defects:
+        defect = _normalize_defect(d, source_columns, targets)
+        unloaded = defect.source_column is not None and defect.source_column not in mapped_sources
+        if unloaded and defect.target_column is None:
+            continue  # a problem in a column that is not loaded does not matter
+        if defect.defect_type == DefectType.VALUE_DRIFT:
+            mapped_to = {
+                m.target_column for m in normalized if m.source_column == defect.source_column
+            }
+            if defect.target_column:
+                mapped_to.add(defect.target_column)
+            if not any(targets.get(t, {}).get("allowed_values") for t in mapped_to):
+                errors.append(
+                    f"defect value_drift on {defect.source_column or defect.target_column!r}: "
+                    "value_drift is only for columns with allowed values. Values of an ID or "
+                    "key column that differ only by case or spacing are duplicate_rows"
+                )
+        defects.append(defect)
     return submission.model_copy(update={"mappings": normalized, "defects": defects}), errors
 
 

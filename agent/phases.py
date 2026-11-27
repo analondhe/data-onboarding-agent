@@ -34,10 +34,12 @@ from agent.tracing import Tracer
 from api.models import MappingStatus, ReviewEvent, Run
 from datagen.schemas import load_schema
 from tools.dbt_runner import (
+    ConversionFailure,
     DbtRunResult,
     FileAccounting,
     SourceFile,
     SourceMapping,
+    conversion_failures,
     render_project,
     row_accounting,
 )
@@ -92,6 +94,11 @@ def map_prompt(threshold: float) -> str:
 
 
 def _column_summary(c: Any) -> dict[str, Any]:
+    values = (
+        {"all_values": {t.value[:60]: t.count for t in c.all_values}}
+        if c.all_values
+        else {"top_values": [t.value[:60] for t in c.top_values[:TOP_VALUES_IN_PROMPT]]}
+    )
     return {
         "column": c.column_name,
         "inferred_type": c.inferred_type,
@@ -99,7 +106,8 @@ def _column_summary(c: Any) -> dict[str, Any]:
         "null_count": c.null_count,
         "null_like_count": c.null_like_count,
         "distinct_count": c.distinct_count,
-        "top_values": [t.value[:60] for t in c.top_values[:TOP_VALUES_IN_PROMPT]],
+        "distinct_ignoring_case": c.distinct_ignoring_case,
+        **values,
         "patterns": dict(list(c.patterns.items())[:PATTERNS_IN_PROMPT]),
     }
 
@@ -314,6 +322,9 @@ def drift_map_phase(
 # --- Build phase ---------------------------------------------------------------------------
 
 BUILDABLE = (MappingStatus.APPROVED, MappingStatus.EDITED)
+# A transform that fails on more than this share of rows goes to the repair agent, even when
+# dbt passes: those rows would otherwise all be quarantined.
+CONVERSION_REPAIR_SHARE = 0.05
 
 
 class UpdateTransformArgs(BaseModel):
@@ -380,7 +391,9 @@ def _failure_summary(result: DbtRunResult) -> str:
     return "; ".join(f"{r.kind} {r.name}: {r.status} ({r.message})" for r in failed[:5])
 
 
-def describe_build_failure(run: Run, schema: dict[str, Any], tools: RunTools) -> str:
+def describe_build_failure(
+    run: Run, schema: dict[str, Any], tools: RunTools, conversions: list[ConversionFailure]
+) -> str:
     types = {c["name"]: c["type"] for c in schema["columns"]}
     files = {f.id: f for f in run.files}
     mappings = [
@@ -396,11 +409,22 @@ def describe_build_failure(run: Run, schema: dict[str, Any], tools: RunTools) ->
         if m.status in BUILDABLE and m.source_column
     ]
     errors = [e.model_dump() for e in tools.get_dbt_errors()]
-    return (
-        f"dbt build failed for target table {schema['table']!r}.\n\n"
-        f"Mappings:\n{json.dumps(mappings, indent=1)}\n\n"
-        f"Failures:\n{json.dumps(errors, indent=1, default=str)}"
+    headline = (
+        f"dbt build passed for target table {schema['table']!r}, but some transforms return "
+        "NULL or unconvertible values for many rows, which are quarantined."
+        if not errors
+        else f"dbt build failed for target table {schema['table']!r}."
     )
+    sections = [headline, f"Mappings:\n{json.dumps(mappings, indent=1)}"]
+    if errors:
+        sections.append(f"Failures:\n{json.dumps(errors, indent=1, default=str)}")
+    if conversions:
+        failing = [c.model_dump() for c in conversions]
+        sections.append(
+            "Values the transforms cannot convert (rows quarantined because of them, and the "
+            f"most common source values):\n{json.dumps(failing, indent=1)}"
+        )
+    return "\n\n".join(sections)
 
 
 def build_phase(
@@ -432,9 +456,21 @@ def build_phase(
             span.set_outputs(result.model_dump(exclude={"results"}))
         return result
 
+    def failing_conversions(result: DbtRunResult) -> list[ConversionFailure]:
+        if not result.success:
+            return []
+        sources = {
+            m.target_column: m.source_column
+            for m in run.mappings
+            if m.status in BUILDABLE and m.source_column
+        }
+        return conversion_failures(wh, schema["table"], sources, CONVERSION_REPAIR_SHARE)
+
     state = {"result": build(), "repairs": 0, "selected": False}
+    state["conversions"] = failing_conversions(state["result"])
     loop = None
-    if not state["result"].success and llm is not None and max_repairs > 0:
+    needs_repair = not state["result"].success or state["conversions"]
+    if needs_repair and llm is not None and max_repairs > 0:
         buildable = {m.id: m for m in run.mappings if m.status in BUILDABLE and m.source_column}
         files = {f.id: f for f in run.files}
 
@@ -466,10 +502,26 @@ def build_phase(
             state["repairs"] += 1
             state["selected"] = bool(args.select)
             result = state["result"]
+            state["conversions"] = conversions = failing_conversions(result)
             left = max_repairs - state["repairs"]
             summary = result.model_dump_json(exclude={"results"})
-            if result.success:
+            if result.success and not conversions:
                 return SubmitOutcome(True, message=f"Build passed. {summary}")
+            if result.success:
+                still = "; ".join(
+                    f"{c.target_column}: {c.rejected} of {c.rows} rows, e.g. "
+                    + ", ".join(repr(v) for v in list(c.values)[:5])
+                    for c in conversions
+                )
+                if left <= 0:
+                    return SubmitOutcome(
+                        True, message=f"Build passed; no rebuilds left. Still quarantined: {still}"
+                    )
+                return SubmitOutcome(
+                    False,
+                    message=f"dbt passed, but transforms still fail on many values ({left} "
+                    f"rebuilds left): {still}",
+                )
             if left <= 0:
                 message = f"Build failed and no rebuilds are left. {summary}"
                 return SubmitOutcome(True, message=message)
@@ -484,7 +536,7 @@ def build_phase(
             (PROMPT_DIR / "build.md")
             .read_text(encoding="utf-8")
             .replace("{max_repairs}", str(max_repairs)),
-            describe_build_failure(run, schema, tools),
+            describe_build_failure(run, schema, tools, state["conversions"]),
             [
                 Tool(
                     "update_transform",

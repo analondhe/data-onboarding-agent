@@ -1,0 +1,103 @@
+table: hospital
+description: One row per hospital and quality measure (Raha benchmark, US hospital compare data)
+columns:
+  - name: index
+    type: integer
+    required: true
+    unique: true
+    description: Row number of the record in the source file, a whole number starting at 1
+  - name: provider_number
+    type: varchar
+    required: true
+    unique: false
+    description: Medicare provider number of the hospital, digits such as 10018
+  - name: hospital_name
+    type: varchar
+    required: true
+    unique: false
+    description: Name of the hospital, in lower case
+  - name: address_1
+    type: varchar
+    required: false
+    unique: false
+    description: First street address line
+  - name: address_2
+    type: varchar
+    required: false
+    unique: false
+    description: Second address line; the word empty when there is none
+  - name: address_3
+    type: varchar
+    required: false
+    unique: false
+    description: Third address line; the word empty when there is none
+  - name: city
+    type: varchar
+    required: false
+    unique: false
+    description: City of the hospital, in lower case
+  - name: state
+    type: varchar
+    required: false
+    unique: false
+    description: Two-letter US state code in lower case, such as al
+  - name: zip_code
+    type: varchar
+    required: false
+    unique: false
+    description: Five-digit ZIP code
+  - name: county_name
+    type: varchar
+    required: false
+    unique: false
+    description: County of the hospital, in lower case
+  - name: phone_number
+    type: varchar
+    required: false
+    unique: false
+    description: Ten-digit phone number without separators
+  - name: hospital_type
+    type: varchar
+    required: false
+    unique: false
+    description: Kind of hospital, such as acute care hospitals
+  - name: hospital_owner
+    type: varchar
+    required: false
+    unique: false
+    description: Ownership, such as voluntary non-profit - private
+  - name: emergency_service
+    type: varchar
+    required: false
+    unique: false
+    description: Whether the hospital offers emergency services, yes or no
+  - name: condition
+    type: varchar
+    required: false
+    unique: false
+    description: Medical condition the measure belongs to, such as surgical infection prevention
+  - name: measure_code
+    type: varchar
+    required: false
+    unique: false
+    description: Code of the quality measure, such as scip-card-2
+  - name: measure_name
+    type: varchar
+    required: false
+    unique: false
+    description: Full description of the quality measure
+  - name: score
+    type: varchar
+    required: false
+    unique: false
+    description: Score on the measure as written, such as 97% or the word empty
+  - name: sample
+    type: varchar
+    required: false
+    unique: false
+    description: Number of patients in the sample as written, such as 34 patients or the word empty
+  - name: state_average
+    type: varchar
+    required: false
+    unique: false
+    description: Key of the state average for the measure, state code and measure code joined by an underscore, such as al_scip-card-2

@@ -45,7 +45,7 @@ def _pct(value: float | None) -> str:
 def render_markdown(meta: dict[str, Any], summary: dict[str, Any], scores: list[CaseScore]) -> str:
     repeats = f", {meta['repeats']} runs each" if meta["repeats"] > 1 else ""
     lines = [
-        f"# Scorecard: {meta['model']}",
+        f"# Scorecard: {meta['model']}" + (f" ({meta['label']})" if meta.get("label") else ""),
         "",
         f"{meta['timestamp']} · {summary['cases']} cases{repeats} · review threshold "
         f"{meta['threshold']} · {summary['failed_runs']} failed runs · {summary['repairs']} "
@@ -61,6 +61,11 @@ def render_markdown(meta: dict[str, Any], summary: dict[str, Any], scores: list[
         f"| Defect recall | {_pct(summary['defect_recall'])} |",
         f"| Defect precision | {_pct(summary['defect_precision'])} |",
         f"| Cell accuracy | {_pct(summary['cell_accuracy'])} |",
+        *(
+            [f"| Cell accuracy of the dirty file as is | {_pct(meta['baseline_cell_accuracy'])} |"]
+            if meta.get("baseline_cell_accuracy") is not None
+            else []
+        ),
         f"| Escalation rate | {_pct(summary['escalation_rate'])} |",
         f"| Bad auto-approvals | {summary['bad_auto_approvals']} |",
         f"| Build success | {_pct(summary['build_success'])} |",
@@ -127,6 +132,7 @@ def run_evals(
     make_llm: Callable[[dict[str, Any]], LLM],
     results_dir: Path,
     repeats: int = 1,
+    label: str | None = None,
 ) -> tuple[dict[str, Any], list[CaseScore], Path]:
     """Run every case ``repeats`` times; return (summary, run scores, markdown scorecard)."""
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -140,11 +146,17 @@ def run_evals(
     model_name = make_llm(keys[0]).model
     meta = {
         "model": model_name,
+        "label": label,
         "timestamp": timestamp,
         "threshold": settings.review_confidence_threshold,
         "repeats": repeats,
         "cases": [k["case_id"] for k in keys],
     }
+    baselines = [k["baseline_cells"] for k in keys if "baseline_cells" in k]
+    if baselines:  # benchmark cases: how many cells were already right before cleaning
+        meta["baseline_cell_accuracy"] = round(
+            sum(c for c, _ in baselines) / sum(t for _, t in baselines), 4
+        )
 
     scores: list[CaseScore] = []
     with tracer.experiment_run(
@@ -185,7 +197,9 @@ def run_evals(
         tracer.log_metrics({k: v for k, v in summary.items() if isinstance(v, int | float)})
 
     results_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"{timestamp}_{re.sub(r'[^A-Za-z0-9.-]+', '-', model_name)}"
+    stem = "_".join(
+        [timestamp, *([label] if label else []), re.sub(r"[^A-Za-z0-9.-]+", "-", model_name)]
+    )
     report = {"meta": meta, "summary": summary, "runs": [asdict(s) for s in scores]}
     (results_dir / f"{stem}.json").write_text(json.dumps(report, indent=2) + "\n")
     markdown = results_dir / f"{stem}.md"
@@ -219,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         help="answer with FakeLLM from the answer keys; exit 1 unless mapping, defects, "
         "and builds are all perfect",
     )
+    parser.add_argument("--label", help="added to the scorecard's title and file name")
     args = parser.parse_args(argv)
 
     if not args.cases_dir.is_dir():
@@ -246,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
             return real
 
     summary, _, markdown = run_evals(
-        case_dirs, settings, make_llm, args.results_dir, repeats=args.repeats
+        case_dirs, settings, make_llm, args.results_dir, repeats=args.repeats, label=args.label
     )
     print(f"\nScorecard: {markdown}")
     print(json.dumps(summary, indent=1))

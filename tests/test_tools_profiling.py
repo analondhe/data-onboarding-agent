@@ -43,6 +43,17 @@ def test_counts_nulls_blanks_null_like_and_distinct_values(wh, load_csv):
     assert col.patterns == {"a": 3, "null-like text": 2}
 
 
+def test_values_differing_only_by_case_and_short_value_lists_are_reported(wh, load_csv):
+    ids = ["CUS-1", "cus-1", " CUS-2", "CUS-3"]
+    many = [str(i) for i in range(31)]
+    file = load_csv(csv_of(id=ids + [""] * 27, n=many))
+    profile = profile_file(wh, file.file_id)
+    key = column(profile, "id")
+    assert (key.distinct_count, key.distinct_ignoring_case) == (4, 3)  # cus-1 repeats CUS-1
+    assert {t.value for t in key.all_values} == set(ids)
+    assert column(profile, "n").all_values is None  # more than 30 distinct values
+
+
 def test_infers_types_bounds_and_match_rates(wh, load_csv):
     file = load_csv(
         csv_of(
