@@ -1,9 +1,21 @@
-.PHONY: seed test lint format onboard eval eval-smoke model
+.PHONY: up down logs seed test lint format onboard eval eval-smoke model
 
 UV ?= uv
 SEED ?= 42
 CUSTOMERS ?= 10000
 CASE_ROWS ?= 2000
+
+## Build and start the whole stack (api, tools, postgres, ollama, mlflow); waits for health checks
+up:
+	docker compose up -d --build --wait
+	@echo "API http://localhost:8000/docs  ·  MLflow http://localhost:5001  ·  MCP tools http://localhost:8100/mcp"
+
+## Stop the stack (data volumes are kept; `docker compose down -v` deletes them)
+down:
+	docker compose down
+
+logs:
+	docker compose logs -f --tail=100 api tools
 
 ## Generate clean Acme Cloud tables into data/clean/ and 30 corrupted eval cases into evals/cases/
 seed:

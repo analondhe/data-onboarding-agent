@@ -1,0 +1,109 @@
+# make up   -> docker compose up -d --build --wait
+#
+# api       :8000  FastAPI + the agent's background worker
+# tools     :8100  MCP server (profiling, transforms, dbt), shares the run-data volume with api
+# mlflow    :5001  traces and eval runs (container port 5000; macOS AirPlay already uses 5000)
+# postgres  5432 and ollama 11434 are reachable inside the stack only, so they never clash
+# with a Postgres or Ollama already running on the host.
+#
+# LLM settings come from .env (Compose reads it for ${...} below); without them the agent
+# uses the ollama service.
+name: data-onboarding
+
+x-app: &app
+  build: .
+  image: data-onboarding-agent:local
+  volumes:
+    - run-data:/app/data
+  environment: &app-env
+    DATA_DIR: /app/data
+    DATABASE_URL: postgresql+psycopg://app:app@postgres:5432/app
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+    MLFLOW_UI_URL: http://localhost:5001
+    TOOLS_URL: http://tools:8100/mcp
+    LLM_BASE_URL: ${LLM_BASE_URL:-http://ollama:11434/v1}
+    LLM_MODEL: ${LLM_MODEL:-}
+    LLM_API_KEY: ${LLM_API_KEY:-not-needed-for-ollama}
+    LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-}
+    REVIEW_CONFIDENCE_THRESHOLD: ${REVIEW_CONFIDENCE_THRESHOLD:-0.8}
+    AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-25}
+    BUILD_MAX_REPAIRS: ${BUILD_MAX_REPAIRS:-3}
+    MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-1024}
+
+services:
+  api:
+    <<: *app
+    command: ["uvicorn", "--factory", "api.main:create_app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      tools: {condition: service_healthy}
+      mlflow: {condition: service_healthy}
+      ollama: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health', timeout=8)"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 20s
+
+  tools:
+    <<: *app
+    command: ["python", "-m", "tools.server"]
+    ports: ["8100:8100"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8100/health', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  postgres:
+    image: postgres:16.13-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:0.40.18
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.18.0
+    command:
+      - mlflow
+      - server
+      - --host=0.0.0.0
+      - --port=5000
+      - --backend-store-uri=sqlite:////mlflow/mlflow.db
+      - --artifacts-destination=/mlflow/artifacts
+      - --allowed-hosts=mlflow,mlflow:5000,localhost,localhost:5001,127.0.0.1,127.0.0.1:5001
+    ports: ["5001:5000"]
+    volumes:
+      - mlflow-data:/mlflow
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:5000/health', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  run-data:
+  pg-data:
+  ollama-models:
+  mlflow-data:

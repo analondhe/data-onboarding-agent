@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from api.models import Mapping, MappingStatus, ReviewEvent, Run
+from api.models import Mapping, MappingStatus, ReviewEvent, Run, SourceFile
 from tools.transforms import validate_expression
-from tools.warehouse import ToolError, Warehouse, get_file, source_columns
+from tools.warehouse import ToolError
 
 
 class Decision(BaseModel):
@@ -28,17 +29,19 @@ def mapping_state(m: Mapping) -> dict[str, object]:
     }
 
 
-def validated_sql(wh: Warehouse, file_key: str, sql: str) -> str:
+def source_columns(source: SourceFile) -> list[str]:
+    """The file's columns in order, from its stored profiles."""
+    return [p.column_name for p in source.profiles]
+
+
+def validated_sql(source: SourceFile, sql: str) -> str:
     """Check an expression against the source file's columns; return the SQL to store."""
-    with wh.connect(read_only=True) as con:
-        columns = source_columns(con, get_file(con, file_key))
-    return validate_expression(sql, columns)
+    return validate_expression(sql, source_columns(source))
 
 
-def apply_review(
-    session: Session, run: Run, wh: Warehouse, decisions: Iterable[Decision], actor: str
-) -> None:
+def apply_review(session: Session, run: Run, decisions: Iterable[Decision], actor: str) -> None:
     by_id = {m.id: m for m in run.mappings}
+    files = {f.id: f for f in run.files}
     for decision in decisions:
         mapping = by_id.get(decision.mapping_id)
         if mapping is None:
@@ -51,8 +54,7 @@ def apply_review(
         else:
             if not decision.transform_sql or mapping.source_column is None:
                 raise ToolError("An edit needs transform_sql and a mapping with a source column")
-            file_key = next(f.warehouse_file_id for f in run.files if f.id == mapping.file_id)
-            mapping.transform_sql = validated_sql(wh, file_key, decision.transform_sql)
+            mapping.transform_sql = validated_sql(files[mapping.file_id], decision.transform_sql)
             mapping.status = MappingStatus.EDITED
         session.add(
             ReviewEvent(
@@ -67,8 +69,20 @@ def apply_review(
     session.commit()
 
 
-def approve_all(session: Session, run: Run, wh: Warehouse, actor: str = "cli") -> None:
+def pending_reviews(run: Run) -> list[Mapping]:
+    return [m for m in run.mappings if m.status == MappingStatus.PROPOSED]
+
+
+def finish_review(session: Session, run: Run) -> int:
+    """Mark the review done when nothing is pending; returns how many mappings still are."""
+    pending = len(pending_reviews(run))
+    if pending == 0 and run.reviewed_at is None:
+        run.reviewed_at = datetime.now(UTC)
+        session.commit()
+    return pending
+
+
+def approve_all(session: Session, run: Run, actor: str = "cli") -> None:
     """Approve every mapping still waiting for review (the CLI's --approve-all)."""
-    pending = [m for m in run.mappings if m.status == MappingStatus.PROPOSED]
-    decisions = [Decision(mapping_id=m.id, action="approve") for m in pending]
-    apply_review(session, run, wh, decisions, actor)
+    decisions = [Decision(mapping_id=m.id, action="approve") for m in pending_reviews(run)]
+    apply_review(session, run, decisions, actor)

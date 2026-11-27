@@ -17,18 +17,17 @@ from agent.llm import FakeReply, FakeStep, Message
 from agent.review import Decision, apply_review
 from api.models import MappingStatus, Run
 from datagen.schemas import load_schema
-from tools.warehouse import Warehouse
 
 NULL_TOKENS_SQL = "('', 'null', 'none', 'n/a', 'na', '-', 'nan')"
 DATE_FORMATS_SQL = "['%Y-%m-%d', '%m/%d/%Y', '%d %b %Y', '%Y%m%d', '%B %d, %Y']"
 
 
-def answer_key_reviewer(key: dict[str, Any]) -> Callable[[Session, Run, Warehouse], None]:
+def answer_key_reviewer(key: dict[str, Any]) -> Callable[[Session, Run], None]:
     """Approve proposed mappings the answer key confirms; reject the others."""
     true_pairs = {(m["source_column"], m["target_column"]) for m in key["mappings"]}
     missing = set(key["missing_target_columns"])
 
-    def review(session: Session, run: Run, wh: Warehouse) -> None:
+    def review(session: Session, run: Run) -> None:
         decisions = []
         for m in run.mappings:
             if m.status != MappingStatus.PROPOSED:
@@ -38,7 +37,7 @@ def answer_key_reviewer(key: dict[str, Any]) -> Callable[[Session, Run, Warehous
             else:
                 correct = (m.source_column, m.target_column) in true_pairs
             decisions.append(Decision(mapping_id=m.id, action="approve" if correct else "reject"))
-        apply_review(session, run, wh, decisions, actor="answer-key")
+        apply_review(session, run, decisions, actor="answer-key")
 
     return review
 

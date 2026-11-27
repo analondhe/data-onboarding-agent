@@ -40,6 +40,9 @@ class Settings:
     review_confidence_threshold: float
     agent_max_steps: int
     build_max_repairs: int
+    tools_url: str | None = None  # MCP tools server; unset means call the tools in-process
+    max_upload_mb: int = 1024
+    mlflow_ui_url: str | None = None  # base URL for trace links in reports
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -59,4 +62,7 @@ class Settings:
             review_confidence_threshold=float(env("REVIEW_CONFIDENCE_THRESHOLD", "0.8")),
             agent_max_steps=int(env("AGENT_MAX_STEPS", "25")),
             build_max_repairs=int(env("BUILD_MAX_REPAIRS", "3")),
+            tools_url=env("TOOLS_URL") or None,
+            max_upload_mb=int(env("MAX_UPLOAD_MB", "1024")),
+            mlflow_ui_url=env("MLFLOW_UI_URL") or None,
         )

@@ -71,7 +71,9 @@ def test_file_to_reviewed_mappings_with_one_trace(settings, case):
     names = [span.name for span in trace.data.spans]
     assert names[0] == "run"
     assert names.count("llm") == 2
-    assert {"phase:profile", "tool:get_column_profile", "tool:submit_mappings"} <= set(names)
+    assert {"phase:profile:messy.csv", "tool:get_column_profile", "tool:submit_mappings"} <= set(
+        names
+    )
     llm_span = next(s for s in trace.data.spans if s.name == "llm")
     assert llm_span.attributes["model"] == "fake-llm"
     assert llm_span.attributes["prompt_tokens"] > 0

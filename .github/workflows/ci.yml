@@ -24,6 +24,15 @@ jobs:
       - name: Eval smoke test (FakeLLM)
         run: make eval-smoke
 
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate docker-compose.yml
+        run: docker compose config --quiet
+      - name: Build the api/tools image
+        run: docker build -t data-onboarding-agent:ci .
+
   secret-scan:
     runs-on: ubuntu-24.04
     steps:
