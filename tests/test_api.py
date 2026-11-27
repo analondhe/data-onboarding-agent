@@ -6,6 +6,7 @@ import logging
 from dataclasses import replace
 from pathlib import Path
 
+import mlflow
 import pytest
 from fastapi.testclient import TestClient
 
@@ -36,6 +37,7 @@ def model() -> dict:
 
 @pytest.fixture
 def client(settings, model):
+    settings = replace(settings, mlflow_ui_url="http://mlflow.test")
     app = create_app(settings, lambda: model["llm"], inline_worker=True)
     with TestClient(app) as test_client:
         yield test_client
@@ -86,9 +88,14 @@ def test_a_run_completes_through_the_api(client, model, case):
     assert report["run"]["status"] == "done", report["run"]["error"]
     [accounting] = report["build"]["row_accounting"]
     assert accounting["balanced"]
-    assert accounting["rows_in"] == key["messy_rows"]
+    assert (accounting["rows_in"], accounting["filename"]) == (key["messy_rows"], "export.csv")
     assert report["build"]["dbt"]["tests_failed"] == 0
     assert report["model_calls"] == 2
+    experiment = mlflow.get_trace(report["trace_id"]).info.experiment_id
+    assert report["trace_url"] == (
+        f"http://mlflow.test/#/experiments/{experiment}/traces"
+        f"?selectedEvaluationId={report['trace_id']}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -175,7 +182,9 @@ def test_review_edits_are_validated(client, model, case):
     bad = {"mapping_id": mapping["id"], "action": "edit", "transform_sql": "DROP TABLE raw.x"}
     response = client.post(f"/runs/{run_id}/review", json={"decisions": [bad], "build": False})
     assert response.status_code == 422
-    assert "Expected a single expression" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail.startswith(f"Edit to {mapping['target_column']}: ")  # says which edit failed
+    assert "Expected a single expression" in detail
     unknown = {"mapping_id": 99999, "action": "approve"}
     response = client.post(f"/runs/{run_id}/review", json={"decisions": [unknown]})
     assert response.status_code == 422
@@ -188,6 +197,28 @@ def test_health_reports_each_dependency(client):
     assert body["checks"]["tools"] == "ok (in-process)"
     assert body["checks"]["model"].startswith("error:")  # the test settings point nowhere
     assert (response.status_code, body["status"]) == (503, "degraded")
+
+
+def test_runs_are_listed_newest_first(client):
+    first, second = new_run(client), new_run(client, "invoices")
+    listed = client.get("/runs").json()
+    assert [r["id"] for r in listed] == [second, first]
+    assert listed[0]["target_schema"] == "invoices"
+    assert [r["id"] for r in client.get("/runs?limit=1").json()] == [second]
+
+
+def test_only_the_web_app_origin_may_call_the_api_from_a_browser(client):
+    def preflight(origin: str):
+        return client.options(
+            "/runs",
+            headers={"Origin": origin, "Access-Control-Request-Method": "POST"},
+        )
+
+    allowed = preflight("http://localhost:3000")
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == "http://localhost:3000"
+    refused = preflight("http://evil.example")
+    assert "access-control-allow-origin" not in refused.headers
 
 
 def test_runs_interrupted_by_a_restart_are_marked_failed(settings, model):

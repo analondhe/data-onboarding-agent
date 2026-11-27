@@ -43,6 +43,7 @@ class Settings:
     tools_url: str | None = None  # MCP tools server; unset means call the tools in-process
     max_upload_mb: int = 1024
     mlflow_ui_url: str | None = None  # base URL for trace links in reports
+    cors_origins: tuple[str, ...] = ("http://localhost:3000",)  # browsers allowed to call the API
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -65,4 +66,9 @@ class Settings:
             tools_url=env("TOOLS_URL") or None,
             max_upload_mb=int(env("MAX_UPLOAD_MB", "1024")),
             mlflow_ui_url=env("MLFLOW_UI_URL") or None,
+            cors_origins=tuple(
+                o.strip()
+                for o in env("CORS_ORIGINS", "http://localhost:3000").split(",")
+                if o.strip()
+            ),
         )

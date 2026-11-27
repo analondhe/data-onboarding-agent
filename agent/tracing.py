@@ -36,6 +36,7 @@ class Tracer:
     def __init__(self, tracking_uri: str | None, experiment: str = EXPERIMENT) -> None:
         self.enabled = bool(tracking_uri)
         self.trace_id: str | None = None
+        self.experiment_id: str | None = None  # the MLflow UI needs it to open a trace
         if tracking_uri:
             if tracking_uri.startswith("sqlite:///"):
                 Path(tracking_uri.removeprefix("sqlite:///")).parent.mkdir(
@@ -44,7 +45,7 @@ class Tracer:
             logging.getLogger("mlflow").setLevel(logging.WARNING)
             logging.getLogger("alembic").setLevel(logging.WARNING)
             mlflow.set_tracking_uri(tracking_uri)
-            mlflow.set_experiment(experiment)
+            self.experiment_id = mlflow.set_experiment(experiment).experiment_id
 
     @contextmanager
     def span(

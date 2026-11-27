@@ -10,8 +10,19 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
-from sqlalchemy import Engine
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from agent.llm import LLM, OpenAICompatibleLLM
@@ -74,7 +85,17 @@ def create_app(
         yield
         worker.shutdown()
 
-    app = FastAPI(title="Data Onboarding Agent", version="0.5.0", lifespan=lifespan)
+    app = FastAPI(title="Data Onboarding Agent", version="0.6.0", lifespan=lifespan)
+    # The web app (another origin, :3000) calls the API straight from the browser.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.cors_origins),
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+    )
+
+    def out(run: Run) -> RunOut:
+        return RunOut.of(run, busy=worker.is_active(run.id))
 
     def get_run(session: Session, run_id: str) -> Run:
         run = session.get(Run, run_id)
@@ -100,6 +121,12 @@ def create_app(
     def schemas() -> list[dict[str, Any]]:
         return [load_schema(name) for name in TABLES]
 
+    @app.get("/runs")
+    def list_runs(session: DB, limit: Annotated[int, Query(ge=1, le=200)] = 50) -> list[RunOut]:
+        """Most recent runs first."""
+        runs = session.scalars(select(Run).order_by(Run.created_at.desc()).limit(limit))
+        return [out(run) for run in runs]
+
     @app.post("/runs", status_code=status.HTTP_201_CREATED)
     def create(body: CreateRun, session: DB) -> RunOut:
         try:
@@ -111,7 +138,7 @@ def create_app(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
                 f"Unknown target schema {body.target_schema!r}; use one of: {', '.join(TABLES)}",
             ) from exc
-        return RunOut.of(run)
+        return out(run)
 
     @app.post("/runs/{run_id}/files", status_code=status.HTTP_201_CREATED)
     async def upload(
@@ -128,7 +155,7 @@ def create_app(
             except ToolError as exc:
                 path.unlink(missing_ok=True)
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
-        return RunOut.of(run)
+        return out(run)
 
     @app.post("/runs/{run_id}/start", status_code=status.HTTP_202_ACCEPTED)
     def start(run_id: str, session: DB) -> RunOut:
@@ -144,11 +171,11 @@ def create_app(
             raise conflict(f"Run {run_id} is done")
         worker.submit(run_id)
         session.refresh(run)
-        return RunOut.of(run)
+        return out(run)
 
     @app.get("/runs/{run_id}")
     def get(run_id: str, session: DB) -> RunOut:
-        return RunOut.of(get_run(session, run_id))
+        return out(get_run(session, run_id))
 
     @app.get("/runs/{run_id}/mappings")
     def mappings(run_id: str, session: DB) -> list[MappingOut]:
@@ -180,16 +207,19 @@ def create_app(
             worker.submit(run_id)
             response.status_code = status.HTTP_202_ACCEPTED
         session.refresh(run)
-        return ReviewOut(pending_reviews=pending, building=building, run=RunOut.of(run))
+        return ReviewOut(pending_reviews=pending, building=building, run=out(run))
 
     @app.get("/runs/{run_id}/report")
     def report(run_id: str, session: DB) -> ReportOut:
         run = get_run(session, run_id)
         trace_url = None
-        if settings.mlflow_ui_url and run.trace_id:
-            trace_url = f"{settings.mlflow_ui_url.rstrip('/')}/#/traces/{run.trace_id}"
+        if settings.mlflow_ui_url and run.trace_id and run.trace_experiment_id:
+            trace_url = (
+                f"{settings.mlflow_ui_url.rstrip('/')}/#/experiments/{run.trace_experiment_id}"
+                f"/traces?selectedEvaluationId={run.trace_id}"
+            )
         return ReportOut(
-            run=RunOut.of(run),
+            run=out(run),
             duration_seconds=run.duration_seconds,
             model_calls=run.model_calls,
             tool_calls=run.tool_calls,
@@ -197,9 +227,20 @@ def create_app(
             completion_tokens=run.completion_tokens,
             trace_id=run.trace_id,
             trace_url=trace_url,
-            build=run.build_report,
+            build=_with_filenames(run),
         )
 
     app.state.worker = worker
     app.state.sessions = sessions
     return app
+
+
+def _with_filenames(run: Run) -> dict[str, Any] | None:
+    """The stored build report, with each row-accounting entry's uploaded file name."""
+    if run.build_report is None:
+        return None
+    names = {f.warehouse_file_id: f.filename for f in run.files}
+    accounting = [
+        {**a, "filename": names.get(a["file_id"])} for a in run.build_report["row_accounting"]
+    ]
+    return {**run.build_report, "row_accounting": accounting}

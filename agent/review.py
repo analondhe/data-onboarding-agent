@@ -54,7 +54,12 @@ def apply_review(session: Session, run: Run, decisions: Iterable[Decision], acto
         else:
             if not decision.transform_sql or mapping.source_column is None:
                 raise ToolError("An edit needs transform_sql and a mapping with a source column")
-            mapping.transform_sql = validated_sql(files[mapping.file_id], decision.transform_sql)
+            try:
+                mapping.transform_sql = validated_sql(
+                    files[mapping.file_id], decision.transform_sql
+                )
+            except ToolError as exc:
+                raise ToolError(f"Edit to {mapping.target_column}: {exc}") from exc
             mapping.status = MappingStatus.EDITED
         session.add(
             ReviewEvent(

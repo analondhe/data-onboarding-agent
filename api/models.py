@@ -47,6 +47,7 @@ class Run(Base):
     model_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     trace_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    trace_experiment_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     model_calls: Mapped[int] = mapped_column(Integer, default=0)
     tool_calls: Mapped[int] = mapped_column(Integer, default=0)
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)

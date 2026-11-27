@@ -31,6 +31,7 @@ class RunOut(BaseModel):
     phase: str
     steps: int  # model calls so far
     pending_reviews: int
+    busy: bool  # the background worker holds the run (queued or running); poll until false
     error: str | None
     model_name: str | None
     trace_id: str | None
@@ -39,7 +40,7 @@ class RunOut(BaseModel):
     updated_at: datetime
 
     @classmethod
-    def of(cls, run: Run) -> RunOut:
+    def of(cls, run: Run, *, busy: bool) -> RunOut:
         return cls(
             id=run.id,
             customer_name=run.customer_name,
@@ -48,6 +49,7 @@ class RunOut(BaseModel):
             phase=PHASES.get(run.status, run.status),
             steps=run.model_calls,
             pending_reviews=len(pending_reviews(run)),
+            busy=busy,
             error=run.error,
             model_name=run.model_name,
             trace_id=run.trace_id,
