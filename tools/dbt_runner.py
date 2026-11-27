@@ -27,13 +27,11 @@ import duckdb
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pydantic import BaseModel
 
-from tools.warehouse import ToolError, Warehouse, quote_ident
+from tools.warehouse import NULL_TOKENS, ToolError, Warehouse, quote_ident
 
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "dbt_project" / "templates"
 DBT_TIMEOUT_SECONDS = 900
 MAX_FAILING_ROWS = 5
-# Text that means "no value"; a transform returning NULL for these is not a conversion failure.
-NULL_TOKENS = ("null", "none", "nil", "n/a", "na", "#n/a", "nan", "-", "--", "?", "missing")
 
 _env = Environment(
     loader=FileSystemLoader(TEMPLATE_DIR),
@@ -123,9 +121,17 @@ def _has_input_sql(source_column: str) -> str:
 
 
 def render_project(
-    wh: Warehouse, run_id: str, schema: dict[str, Any], files: list[SourceFile]
+    wh: Warehouse,
+    run_id: str,
+    schema: dict[str, Any],
+    files: list[SourceFile],
+    *,
+    quarantine_new_categories: bool = False,
 ) -> Path:
-    """Write the dbt project for one target table; returns the project directory."""
+    """Write the dbt project for one target table; returns the project directory.
+
+    With ``quarantine_new_categories`` (recurring loads), a value outside a column's allowed
+    values sends its row to the rejected table instead of failing the accepted_values test."""
     if not files:
         raise ToolError("No approved mappings to build")
     table = schema["table"]
@@ -163,6 +169,11 @@ def render_project(
                     # so only single-target sources can show that a value failed to convert.
                     "has_input_sql": (
                         _has_input_sql(m.source_column) if m and not m.shared_source else "false"
+                    ),
+                    "allowed_sql": (
+                        ", ".join(_sql_literal(v) for v in col["allowed_values"])
+                        if quarantine_new_categories
+                        else ""
                     ),
                 }
             )

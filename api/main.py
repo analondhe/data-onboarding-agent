@@ -23,17 +23,21 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import Engine, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, object_session, sessionmaker
 
+from agent import contracts
 from agent.llm import LLM, OpenAICompatibleLLM
 from agent.review import apply_review, finish_review
-from agent.runner import ACTIVE, add_file, create_run, recover_interrupted
+from agent.runner import ACTIVE, add_file, create_load, create_run, new_run_id, recover_interrupted
 from agent.settings import Settings
 from api.db import make_engine, migrate
 from api.health import check_database, check_model, check_tools
 from api.logs import configure_logging
-from api.models import Run, RunStatus
+from api.models import MappingContract, Run, RunStatus, RunType
 from api.schemas import (
+    ContractOut,
+    ContractSummary,
+    ContractVersion,
     CreateRun,
     DefectOut,
     MappingOut,
@@ -41,10 +45,13 @@ from api.schemas import (
     ReviewIn,
     ReviewOut,
     RunOut,
+    SaveContract,
+    contract_summary,
 )
 from api.uploads import save_upload
 from api.worker import Worker
-from datagen.schemas import TABLES, load_schema
+from datagen.schemas import TARGETS, load_schema
+from tools.loads import table_rows
 from tools.warehouse import ToolError
 
 log = logging.getLogger(__name__)
@@ -85,7 +92,7 @@ def create_app(
         yield
         worker.shutdown()
 
-    app = FastAPI(title="Data Onboarding Agent", version="0.6.0", lifespan=lifespan)
+    app = FastAPI(title="Data Onboarding Agent", version="0.7.0", lifespan=lifespan)
     # The web app (another origin, :3000) calls the API straight from the browser.
     app.add_middleware(
         CORSMiddleware,
@@ -95,13 +102,29 @@ def create_app(
     )
 
     def out(run: Run) -> RunOut:
-        return RunOut.of(run, busy=worker.is_active(run.id))
+        saved = None
+        if run.run_type == RunType.ONBOARDING and run.status == RunStatus.DONE:
+            saved = contracts.saved_contract_id(object_session(run), run)
+        return RunOut.of(run, busy=worker.is_active(run.id), saved_contract_id=saved)
 
     def get_run(session: Session, run_id: str) -> Run:
         run = session.get(Run, run_id)
         if run is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Run {run_id} not found")
         return run
+
+    def get_contract(session: Session, contract_id: int) -> MappingContract:
+        contract = session.get(MappingContract, contract_id)
+        if contract is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, f"Source contract {contract_id} not found"
+            )
+        return contract
+
+    def summary(session: Session, contract: MappingContract) -> dict[str, Any]:
+        loads = contracts.source_loads(session, contract)
+        rows = table_rows(contracts.source_table_path(settings, contract), contract.target_schema)
+        return contract_summary(contract, loads, rows)
 
     def conflict(message: str) -> HTTPException:
         return HTTPException(status.HTTP_409_CONFLICT, message)
@@ -119,7 +142,7 @@ def create_app(
 
     @app.get("/schemas")
     def schemas() -> list[dict[str, Any]]:
-        return [load_schema(name) for name in TABLES]
+        return [load_schema(name) for name in TARGETS]
 
     @app.get("/runs")
     def list_runs(session: DB, limit: Annotated[int, Query(ge=1, le=200)] = 50) -> list[RunOut]:
@@ -136,7 +159,7 @@ def create_app(
         except FileNotFoundError as exc:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
-                f"Unknown target schema {body.target_schema!r}; use one of: {', '.join(TABLES)}",
+                f"Unknown target schema {body.target_schema!r}; use one of: {', '.join(TARGETS)}",
             ) from exc
         return out(run)
 
@@ -147,6 +170,8 @@ def create_app(
         run = get_run(session, run_id)
         if run.status not in (RunStatus.CREATED, RunStatus.FAILED) or run.mappings:
             raise conflict(f"Run {run_id} is {run.status}; files can only be added before mapping")
+        if run.run_type == RunType.RECURRING:
+            raise conflict(f"Run {run_id} is a recurring load of one file; start a new load")
         uploads_dir = settings.data_dir / "runs" / run_id / "uploads"
         for upload in files:
             path = await save_upload(upload, uploads_dir, settings.max_upload_mb)
@@ -229,6 +254,70 @@ def create_app(
             trace_url=trace_url,
             build=_with_filenames(run),
         )
+
+    @app.post("/runs/{run_id}/contract", status_code=status.HTTP_201_CREATED)
+    def save_contract(run_id: str, body: SaveContract, session: DB) -> ContractOut:
+        """Save a finished onboarding run as a recurring source and load its rows."""
+        run = get_run(session, run_id)
+        try:
+            contract = contracts.save_contract(session, settings, run, body.source_name.strip())
+        except ToolError as exc:
+            session.rollback()
+            raise conflict(str(exc)) from exc
+        return contract_out(session, contract)
+
+    @app.get("/contracts")
+    def list_contracts(session: DB) -> list[ContractSummary]:
+        """The latest version of every source, newest first."""
+        latest: dict[tuple[str, str], MappingContract] = {}
+        for c in session.scalars(select(MappingContract).order_by(MappingContract.version.desc())):
+            latest.setdefault((c.customer_name, c.source_name), c)
+        ordered = sorted(latest.values(), key=lambda c: c.created_at, reverse=True)
+        return [ContractSummary(**summary(session, c)) for c in ordered]
+
+    def contract_out(session: Session, contract: MappingContract) -> ContractOut:
+        return ContractOut(
+            **summary(session, contract),
+            created_from_run_id=contract.created_from_run_id,
+            row_count=contract.baseline_profile["row_count"],
+            mappings=contract.mappings,
+            columns=[
+                {"name": name, "inferred_type": c["inferred_type"]}
+                for name, c in contract.baseline_profile["columns"].items()
+            ],
+            versions=[
+                ContractVersion(
+                    id=v.id,
+                    version=v.version,
+                    created_at=v.created_at,
+                    created_from_run_id=v.created_from_run_id,
+                )
+                for v in contracts.versions(session, contract)
+            ],
+            recent_loads=[out(r) for r in contracts.source_loads(session, contract, limit=20)],
+        )
+
+    @app.get("/contracts/{contract_id}")
+    def get_contract_route(contract_id: int, session: DB) -> ContractOut:
+        return contract_out(session, get_contract(session, contract_id))
+
+    @app.post("/contracts/{contract_id}/loads", status_code=status.HTTP_202_ACCEPTED)
+    async def new_load(
+        contract_id: int, session: DB, file: Annotated[UploadFile, File()]
+    ) -> RunOut:
+        """Load a new file from a saved source: drift checks, then build and upsert, or review."""
+        contract = get_contract(session, contract_id)
+        run_id = new_run_id()
+        uploads_dir = settings.data_dir / "runs" / run_id / "uploads"
+        path = await save_upload(file, uploads_dir, settings.max_upload_mb)
+        try:
+            run = create_load(session, settings, contract, path, run_id=run_id)
+        except ToolError as exc:
+            path.unlink(missing_ok=True)
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+        worker.submit(run.id)
+        session.refresh(run)
+        return out(run)
 
     app.state.worker = worker
     app.state.sessions = sessions

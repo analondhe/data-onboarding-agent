@@ -1,4 +1,4 @@
-.PHONY: up down logs seed test lint format onboard eval eval-smoke model web-install web-dev web-build
+.PHONY: up down logs seed test lint format onboard eval eval-smoke eval-drift model web-install web-dev web-build pull-311
 
 UV ?= uv
 # Next.js otherwise sends anonymous usage telemetry during builds
@@ -19,16 +19,22 @@ down:
 logs:
 	docker compose logs -f --tail=100 api tools
 
-## Generate clean Acme Cloud tables into data/clean/ and 30 corrupted eval cases into evals/cases/
+## Generate clean Acme Cloud tables into data/clean/, 30 corrupted eval cases into evals/cases/,
+## and 33 drift cases into evals/drift_cases/
 seed:
 	$(UV) run python -m datagen.generate --seed $(SEED) --customers $(CUSTOMERS) --out data/clean
-	rm -rf evals/cases
+	rm -rf evals/cases evals/drift_cases
 	$(UV) run python -m evals.corrupt all --seed $(SEED) --rows $(CASE_ROWS) --clean-dir data/clean --out evals/cases
+	$(UV) run python -m evals.drift build --seed $(SEED) --clean-dir data/clean --out evals/drift_cases
 
 ## Profile and map one file with the configured model: make onboard FILE=x.csv SCHEMA=customers
 onboard:
 	@test -n "$(FILE)" -a -n "$(SCHEMA)" || (echo "usage: make onboard FILE=path.csv SCHEMA=customers" && exit 2)
 	$(UV) run python -m agent.cli onboard --file "$(FILE)" --schema "$(SCHEMA)"
+
+## Fetch one day of NYC 311 requests and submit it as a recurring load (stack must be running): make pull-311 [DATE=2026-11-25]
+pull-311:
+	$(UV) run python -m datagen.pull_311 $(if $(DATE),--date $(DATE),)
 
 ## Build the local Ollama model with a 16k context window (see ollama/qwen3-8b-16k.Modelfile)
 model:
@@ -41,6 +47,11 @@ eval:
 ## CI smoke test: 5 cases with FakeLLM answering from the answer keys; fails unless perfect
 eval-smoke:
 	$(UV) run python -m evals.run_evals --fake --limit 5 --results-dir data/eval-smoke
+
+## Recurring loads of every drift case (proposals by the configured model; add EVAL_ARGS=--fake
+## for answer-key proposals); writes evals/results/<time>_drift_<model>.md
+eval-drift:
+	$(UV) run python -m evals.drift run $(EVAL_ARGS)
 
 ## Run all tests; tools/ must stay at 80% line coverage or above
 test:

@@ -8,12 +8,12 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from agent.review import Decision, pending_reviews
-from api.models import Mapping, Run, RunStatus
+from api.models import Mapping, MappingContract, Run, RunStatus
 
 
 class CreateRun(BaseModel):
     customer_name: str = Field(min_length=1, max_length=200)
-    target_schema: str = Field(description="customers, subscriptions, or invoices")
+    target_schema: str = Field(description="customers, subscriptions, invoices, service_requests")
 
 
 class FileOut(BaseModel):
@@ -32,6 +32,10 @@ class RunOut(BaseModel):
     steps: int  # model calls so far
     pending_reviews: int
     busy: bool  # the background worker holds the run (queued or running); poll until false
+    run_type: str  # onboarding or recurring
+    contract_id: int | None  # recurring loads: the contract version they were checked against
+    saved_contract_id: int | None  # onboarding runs saved as a source: that contract version
+    drift: list[dict[str, Any]] | None  # recurring loads: agent.drift.Finding dicts
     error: str | None
     model_name: str | None
     trace_id: str | None
@@ -40,7 +44,7 @@ class RunOut(BaseModel):
     updated_at: datetime
 
     @classmethod
-    def of(cls, run: Run, *, busy: bool) -> RunOut:
+    def of(cls, run: Run, *, busy: bool, saved_contract_id: int | None = None) -> RunOut:
         return cls(
             id=run.id,
             customer_name=run.customer_name,
@@ -50,6 +54,10 @@ class RunOut(BaseModel):
             steps=run.model_calls,
             pending_reviews=len(pending_reviews(run)),
             busy=busy,
+            run_type=run.run_type,
+            contract_id=run.contract_id,
+            saved_contract_id=saved_contract_id,
+            drift=run.drift,
             error=run.error,
             model_name=run.model_name,
             trace_id=run.trace_id,
@@ -140,3 +148,64 @@ class ReportOut(BaseModel):
     trace_id: str | None
     trace_url: str | None
     build: dict[str, Any] | None  # dbt results, repairs, row accounting with reject reasons
+
+
+class SaveContract(BaseModel):
+    source_name: str = Field(min_length=1, max_length=100)
+
+
+class LastLoad(BaseModel):
+    run_id: str
+    status: str
+    created_at: datetime
+
+
+class ContractSummary(BaseModel):
+    id: int
+    customer_name: str
+    source_name: str
+    target_schema: str
+    version: int
+    created_at: datetime
+    fingerprint: str
+    loads: int  # recurring loads of this source, all versions
+    last_load: LastLoad | None
+    table_rows: int | None  # rows in the source's table
+
+
+class ContractVersion(BaseModel):
+    id: int
+    version: int
+    created_at: datetime
+    created_from_run_id: str
+
+
+class ContractOut(ContractSummary):
+    created_from_run_id: str
+    row_count: int  # rows of the baseline file
+    mappings: list[dict[str, Any]]
+    columns: list[dict[str, str]]
+    versions: list[ContractVersion]
+    recent_loads: list[RunOut]
+
+
+def contract_summary(
+    contract: MappingContract, loads: list[Run], table_rows: int | None
+) -> dict[str, Any]:
+    last = loads[0] if loads else None
+    return {
+        "id": contract.id,
+        "customer_name": contract.customer_name,
+        "source_name": contract.source_name,
+        "target_schema": contract.target_schema,
+        "version": contract.version,
+        "created_at": contract.created_at,
+        "fingerprint": contract.fingerprint,
+        "loads": len(loads),
+        "last_load": (
+            LastLoad(run_id=last.id, status=last.status, created_at=last.created_at)
+            if last
+            else None
+        ),
+        "table_rows": table_rows,
+    }

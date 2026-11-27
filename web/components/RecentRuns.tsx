@@ -38,6 +38,9 @@ export function RecentRuns() {
                 <Link href={`/runs/${run.id}`} className="font-medium text-indigo-700 hover:underline">
                   {run.customer_name}
                 </Link>
+                {run.run_type === "recurring" && (
+                  <span className="ml-2 rounded bg-indigo-50 px-1.5 py-0.5 text-xs text-indigo-700">recurring</span>
+                )}
               </td>
               <td className="px-4 py-2">{run.target_schema}</td>
               <td className="px-4 py-2 text-slate-600">

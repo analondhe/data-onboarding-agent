@@ -286,6 +286,7 @@ dependencies = [
     { name = "duckdb" },
     { name = "faker" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "jinja2" },
     { name = "mcp" },
     { name = "mlflow-skinny" },
@@ -301,7 +302,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
@@ -315,6 +315,7 @@ requires-dist = [
     { name = "duckdb", specifier = ">=2.0.0" },
     { name = "faker", specifier = ">=40.54.0" },
     { name = "fastapi", specifier = ">=0.165.0" },
+    { name = "httpx", specifier = ">=0.29.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "mcp", specifier = ">=2.3.0" },
     { name = "mlflow-skinny", specifier = ">=3.18.0" },
@@ -330,7 +331,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = ">=0.29.0" },
     { name = "pytest", specifier = ">=9.2.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff", specifier = ">=0.17.4" },

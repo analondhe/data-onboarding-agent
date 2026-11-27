@@ -18,6 +18,29 @@ export interface FileInfo {
   profiled: boolean;
 }
 
+export type RunType = "onboarding" | "recurring";
+
+export type DriftCheck =
+  | "column_added"
+  | "column_missing"
+  | "column_renamed"
+  | "format_change"
+  | "new_category"
+  | "null_rate_jump"
+  | "volume_anomaly";
+
+export type DriftAction = "propose" | "block" | "warn";
+
+/** One difference between a recurring load's file and the saved source. */
+export interface Finding {
+  check: DriftCheck;
+  source_column: string | null;
+  target_column: string | null;
+  action: DriftAction;
+  message: string;
+  details: Record<string, unknown>;
+}
+
 export interface Run {
   id: string;
   customer_name: string;
@@ -33,6 +56,10 @@ export interface Run {
   files: FileInfo[];
   created_at: string;
   updated_at: string;
+  run_type: RunType;
+  contract_id: number | null;
+  drift: Finding[] | null; // null until drift checks ran (always null for onboarding runs)
+  saved_contract_id: number | null; // contract version saved from this (done, onboarding) run
 }
 
 export interface SchemaColumn {
@@ -114,6 +141,14 @@ export interface FileAccounting {
   balanced: boolean;
 }
 
+/** Rows upserted into the source's persistent table. */
+export interface LoadResult {
+  table: string;
+  inserted: number;
+  updated: number;
+  total_rows: number;
+}
+
 export interface BuildReport {
   status: string;
   repairs: number;
@@ -128,6 +163,7 @@ export interface BuildReport {
     error: string | null;
   };
   row_accounting: FileAccounting[];
+  load?: LoadResult;
 }
 
 export interface Report {
@@ -140,6 +176,41 @@ export interface Report {
   trace_id: string | null;
   trace_url: string | null;
   build: BuildReport | null;
+}
+
+export interface ContractSummary {
+  id: number;
+  customer_name: string;
+  source_name: string;
+  target_schema: string;
+  version: number;
+  created_at: string;
+  fingerprint: string;
+  loads: number;
+  last_load: { run_id: string; status: RunStatus; created_at: string } | null;
+  table_rows: number | null;
+}
+
+export interface ContractMapping {
+  source_column: string;
+  target_column: string;
+  transform_sql: string | null;
+}
+
+export interface ContractVersion {
+  id: number;
+  version: number;
+  created_at: string;
+  created_from_run_id: string;
+}
+
+export interface ContractOut extends ContractSummary {
+  created_from_run_id: string;
+  row_count: number;
+  mappings: ContractMapping[];
+  columns: { name: string; inferred_type: string }[];
+  versions: ContractVersion[];
+  recent_loads: Run[];
 }
 
 export class ApiError extends Error {
@@ -211,17 +282,17 @@ export const api = {
   review: (id: string, decisions: Decision[]) =>
     postJson<ReviewResult>(`/runs/${id}/review`, { decisions, build: true }),
   report: (id: string) => request<Report>(`/runs/${id}/report`),
+  contracts: () => request<ContractSummary[]>("/contracts"),
+  contract: (id: number | string) => request<ContractOut>(`/contracts/${id}`),
+  saveContract: (runId: string, source_name: string) =>
+    postJson<ContractOut>(`/runs/${runId}/contract`, { source_name }),
 };
 
-/** Upload one file with progress (fetch cannot report upload progress). */
-export function uploadFile(
-  runId: string,
-  file: File,
-  onProgress: (fraction: number) => void,
-): Promise<Run> {
+/** POST one file as multipart with progress (fetch cannot report upload progress). */
+function upload(path: string, field: string, file: File, onProgress: (fraction: number) => void): Promise<Run> {
   const { promise, resolve, reject } = Promise.withResolvers<Run>();
   const xhr = new XMLHttpRequest();
-  xhr.open("POST", `${API_URL}/runs/${runId}/files`);
+  xhr.open("POST", `${API_URL}${path}`);
   xhr.upload.onprogress = (event) => {
     if (event.lengthComputable) onProgress(event.loaded / event.total);
   };
@@ -232,9 +303,23 @@ export function uploadFile(
   };
   xhr.onerror = () => reject(new ApiError(0, UNREACHABLE));
   const form = new FormData();
-  form.append("files", file, file.name);
+  form.append(field, file, file.name);
   xhr.send(form);
   return promise;
+}
+
+/** Add one file to an onboarding run. */
+export function uploadFile(runId: string, file: File, onProgress: (fraction: number) => void): Promise<Run> {
+  return upload(`/runs/${runId}/files`, "files", file, onProgress);
+}
+
+/** Start a recurring load of a saved source with one new file. */
+export function uploadLoad(
+  contractId: number | string,
+  file: File,
+  onProgress: (fraction: number) => void,
+): Promise<Run> {
+  return upload(`/contracts/${contractId}/loads`, "file", file, onProgress);
 }
 
 export function errorMessage(error: unknown): string {

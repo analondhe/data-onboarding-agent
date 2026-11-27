@@ -42,6 +42,15 @@ export function BuildReport({ runId }: { runId: string }) {
             />
           </div>
 
+          {build.load && (
+            <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+              Loaded into <span className="font-mono">{build.load.table}</span>:{" "}
+              <strong>{formatNumber(build.load.inserted)}</strong> new{" "}
+              {build.load.inserted === 1 ? "row" : "rows"}, <strong>{formatNumber(build.load.updated)}</strong>{" "}
+              updated, <strong>{formatNumber(build.load.total_rows)}</strong> rows in the table now.
+            </p>
+          )}
+
           <Notice tone={build.status === "passed" ? "ok" : "error"}>
             Build {build.status === "passed" ? "passed" : "failed"}
             {build.repairs > 0 && ` after ${build.repairs} ${build.repairs === 1 ? "repair" : "repairs"} by the agent`}.

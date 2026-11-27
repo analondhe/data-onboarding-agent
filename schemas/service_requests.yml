@@ -1,0 +1,60 @@
+table: service_requests
+description: One row per NYC 311 service request (a non-emergency complaint or request made to New York City)
+columns:
+  - name: request_id
+    type: varchar
+    required: true
+    unique: true
+    description: Unique identifier of the 311 service request, a number assigned by NYC 311 (often called unique key), stored as text
+  - name: created_at
+    type: timestamp
+    required: true
+    unique: false
+    description: Date and time the service request was opened, in local New York time (ISO 8601 like 2026-11-25T08:15:00)
+  - name: closed_at
+    type: timestamp
+    required: false
+    unique: false
+    description: Date and time the service request was closed, in local New York time; empty while the request is still open
+  - name: agency
+    type: varchar
+    required: true
+    unique: false
+    description: Acronym of the city agency responsible for the request, such as NYPD, DSNY, HPD or DOT
+  - name: complaint_type
+    type: varchar
+    required: true
+    unique: false
+    description: Broad category of the complaint or request, such as Noise - Residential, Illegal Parking or HEAT/HOT WATER
+  - name: descriptor
+    type: varchar
+    required: false
+    unique: false
+    description: More specific detail of the complaint type, such as Loud Music/Party or Blocked Hydrant
+  - name: status
+    type: varchar
+    required: true
+    unique: false
+    allowed_values: [open, in_progress, assigned, pending, started, closed, unspecified]
+    description: Current state of the request in lower snake case (source values look like Open, In Progress, Assigned, Pending, Started, Closed, Unspecified)
+  - name: borough
+    type: varchar
+    required: false
+    unique: false
+    allowed_values: [manhattan, bronx, brooklyn, queens, staten_island, unspecified]
+    description: NYC borough where the incident happened in lower snake case (source values look like MANHATTAN, STATEN ISLAND, Unspecified)
+  - name: incident_zip
+    type: varchar
+    required: false
+    unique: false
+    description: Five-digit US ZIP code of the incident location, kept as text to preserve leading zeros
+  - name: latitude
+    type: decimal(9,6)
+    required: false
+    unique: false
+    description: Latitude of the incident location in decimal degrees (WGS 84), around 40.5 to 40.9 for NYC
+  - name: longitude
+    type: decimal(9,6)
+    required: false
+    unique: false
+    description: Longitude of the incident location in decimal degrees (WGS 84), around -74.3 to -73.7 for NYC

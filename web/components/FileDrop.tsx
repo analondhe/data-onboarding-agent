@@ -4,7 +4,15 @@ import { useRef, useState } from "react";
 
 const ACCEPTED = [".csv", ".tsv", ".txt", ".parquet"];
 
-export function FileDrop({ onFiles, disabled }: { onFiles: (files: File[]) => void; disabled?: boolean }) {
+export function FileDrop({
+  onFiles,
+  disabled,
+  multiple = true,
+}: {
+  onFiles: (files: File[]) => void;
+  disabled?: boolean;
+  multiple?: boolean;
+}) {
   const input = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
 
@@ -33,7 +41,7 @@ export function FileDrop({ onFiles, disabled }: { onFiles: (files: File[]) => vo
         onDrop={(event) => {
           event.preventDefault();
           setOver(false);
-          if (!disabled) onFiles(Array.from(event.dataTransfer.files));
+          if (!disabled) onFiles(Array.from(event.dataTransfer.files).slice(0, multiple ? undefined : 1));
         }}
         className={`flex flex-col items-center justify-center rounded-lg border-2 border-dashed px-6 py-10 text-center transition ${
           disabled
@@ -43,13 +51,15 @@ export function FileDrop({ onFiles, disabled }: { onFiles: (files: File[]) => vo
               : "cursor-pointer border-slate-300 bg-white hover:border-indigo-400"
         }`}
       >
-        <p className="font-medium">Drop files here, or click to choose</p>
-        <p className="mt-1 text-sm text-slate-500">CSV, TSV, TXT or Parquet · several files allowed</p>
+        <p className="font-medium">Drop {multiple ? "files" : "a file"} here, or click to choose</p>
+        <p className="mt-1 text-sm text-slate-500">
+          CSV, TSV, TXT or Parquet · {multiple ? "several files allowed" : "one file"}
+        </p>
       </div>
       <input
         ref={input}
         type="file"
-        multiple
+        multiple={multiple}
         accept={ACCEPTED.join(",")}
         className="hidden"
         data-testid="file-input"

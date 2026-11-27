@@ -1,4 +1,4 @@
-"""App-state tables (spec §9). ``mapping_contracts`` arrives with recurring loads in Milestone 7."""
+"""App-state tables (spec §9)."""
 
 from __future__ import annotations
 
@@ -31,6 +31,11 @@ class MappingStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class RunType(StrEnum):
+    ONBOARDING = "onboarding"  # a new source: map everything, a person reviews
+    RECURRING = "recurring"  # a new file from a saved source (mapping contract)
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -55,6 +60,8 @@ class Run(Base):
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     # dbt results, row accounting per file, and repair count from the Build phase
     build_report: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # drift checks of a recurring load (agent.drift.Finding dicts); NULL until they ran
+    drift: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     # set when review decisions are submitted; a resumed run with it set goes on to build
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -143,4 +150,23 @@ class ReviewEvent(Base):
     action: Mapped[str] = mapped_column(String(32))  # approve, edit, reject, agent_repair
     before: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     after: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class MappingContract(Base):
+    """One version of a saved source: the approved mappings of a run, with the fingerprint and
+    baseline profile that later files from the same source are compared with."""
+
+    __tablename__ = "mapping_contracts"
+    __table_args__ = (UniqueConstraint("customer_name", "source_name", "version"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    customer_name: Mapped[str] = mapped_column(String(200))
+    source_name: Mapped[str] = mapped_column(String(100))
+    version: Mapped[int] = mapped_column(Integer)
+    target_schema: Mapped[str] = mapped_column(String(100))
+    fingerprint: Mapped[str] = mapped_column(String(64))  # sha256 of sorted name:inferred_type
+    baseline_profile: Mapped[dict[str, Any]] = mapped_column(JSON)
+    mappings: Mapped[list[dict[str, Any]]] = mapped_column(JSON)  # source/target/transform_sql
+    created_from_run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { DriftPanel } from "@/components/DriftPanel";
 import { Notice } from "@/components/Notice";
 import { RunDetails } from "@/components/RunDetails";
+import { SaveSourceCard } from "@/components/SaveSourceCard";
 import { StatusBadge } from "@/components/StatusBadge";
 import { ApiError, api, errorMessage, type Run, type RunStatus } from "@/lib/api";
 import { formatNumber, formatTime } from "@/lib/format";
@@ -79,6 +81,7 @@ export function RunView({ id }: { id: string }) {
 
   const working = run.busy || WORKING.includes(run.status);
   const rows = run.files.reduce((n, f) => n + f.row_count, 0);
+  const drift = run.drift !== null && <DriftPanel findings={run.drift} />;
 
   return (
     <div className="space-y-6">
@@ -95,6 +98,14 @@ export function RunView({ id }: { id: string }) {
           {run.files.length === 1 ? "file" : "files"} ({run.files.map((f) => f.filename).join(", ") || "none"}),{" "}
           {formatNumber(rows)} rows · started {formatTime(run.created_at)}
         </p>
+        {run.run_type === "recurring" && run.contract_id !== null && (
+          <p className="mt-1 text-sm text-slate-600">
+            Recurring load · checked against{" "}
+            <Link href={`/sources/${run.contract_id}`} className="text-indigo-700 underline">
+              saved source version #{run.contract_id}
+            </Link>
+          </p>
+        )}
       </div>
 
       <Progress status={run.status} />
@@ -128,9 +139,16 @@ export function RunView({ id }: { id: string }) {
           )}
         </div>
       ) : run.status === "awaiting_review" ? (
-        <RunDetails key={run.updated_at} run={run} mode="review" onBuild={follow} />
+        <>
+          {drift}
+          <RunDetails key={run.updated_at} run={run} mode="review" onBuild={follow} />
+        </>
       ) : run.status === "done" ? (
-        <RunDetails key={run.updated_at} run={run} mode="done" onBuild={follow} />
+        <>
+          {drift}
+          {run.run_type === "onboarding" && <SaveSourceCard run={run} />}
+          <RunDetails key={run.updated_at} run={run} mode="done" onBuild={follow} />
+        </>
       ) : (
         <>
           <div className="rounded-lg border border-rose-200 bg-rose-50 p-5">
@@ -144,6 +162,7 @@ export function RunView({ id }: { id: string }) {
               {starting ? "Resuming…" : "Resume"}
             </button>
           </div>
+          {drift}
           <RunDetails key={run.updated_at} run={run} mode="failed" onBuild={follow} />
         </>
       )}

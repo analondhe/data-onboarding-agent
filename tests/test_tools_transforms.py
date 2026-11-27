@@ -6,6 +6,7 @@ from tools.profiling import sample_rows
 from tools.transforms import (
     MAX_FAILING_EXAMPLES,
     UnsafeSQLError,
+    rename_column,
     test_transform,
     validate_expression,
     validate_target_type,
@@ -213,3 +214,14 @@ def test_slow_queries_are_interrupted(wh, load_csv, monkeypatch):
         pytest.raises(ToolError, match=r"longer than 0\.3 seconds"),
     ):
         run_guarded(con, "SELECT count(*) FROM range(1000000000) a, range(1000000000) b")
+
+
+def test_a_renamed_column_is_read_everywhere_the_old_name_was():
+    sql = validate_expression(
+        'CASE WHEN lower(trim("Sign Up Dt")) = \'n/a\' THEN NULL ELSE trim("sign up dt") END',
+        COLUMNS,
+    )
+    renamed = rename_column(sql, "Sign Up Dt", "Signup Date")
+    assert validate_expression(renamed, ["Signup Date", "x"]) == renamed
+    assert renamed.count('"Signup Date"') == 2
+    assert "Sign Up Dt" not in renamed and "'n/a'" in renamed

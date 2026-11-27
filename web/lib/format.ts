@@ -1,4 +1,4 @@
-import type { RunStatus } from "./api";
+import type { DriftCheck, RunStatus } from "./api";
 
 export const STATUS_LABEL: Record<RunStatus, string> = {
   created: "Not started",
@@ -20,6 +20,23 @@ export const DEFECT_LABEL: Record<string, string> = {
   merged_column: "Two fields in one column",
   missing_required_column: "Required column missing",
 };
+
+/** Plain-language names for the drift checks of a recurring load. */
+export const DRIFT_CHECK_LABEL: Record<DriftCheck, string> = {
+  column_added: "New column",
+  column_missing: "Column missing",
+  column_renamed: "Column renamed",
+  format_change: "Values formatted differently",
+  new_category: "New category values",
+  null_rate_jump: "Many more empty values",
+  volume_anomaly: "Unusual number of rows",
+};
+
+/** The file name without its extension, e.g. "orders_2024.csv" → "orders_2024". */
+export function stripExtension(filename: string): string {
+  const dot = filename.lastIndexOf(".");
+  return dot > 0 ? filename.slice(0, dot) : filename;
+}
 
 export function formatNumber(n: number): string {
   return n.toLocaleString("en-US");
