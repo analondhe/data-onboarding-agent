@@ -1,9 +1,14 @@
-"""Run one onboarding through Profile, Map, review, and Build, persisting state at every step.
+"""The run state machine: created -> profiling -> mapping -> awaiting_review -> building -> done.
 
-``onboard`` stops at ``awaiting_review`` unless a reviewer is passed (the CLI's --approve-all,
-or the eval harness answering from the answer key); then it builds in the same trace and ends
-in ``done`` or ``failed`` (with the reason in ``runs.error``). ``build_run`` builds a run that
-was reviewed later, in its own trace.
+``advance`` runs every phase that is due and skips the ones already finished, so a failed run
+resumes from its last completed phase:
+
+- a file without stored profiles is profiled;
+- a file without mappings is mapped (files mapped earlier keep their mappings);
+- once review is finished (``runs.reviewed_at``), the run is built.
+
+The API calls ``advance`` from its background worker; the CLI and evals call ``onboard``, which
+creates the run, loads the files, and advances it with an automatic reviewer.
 """
 
 from __future__ import annotations
@@ -17,8 +22,10 @@ from sqlalchemy.orm import Session
 
 from agent.llm import LLM
 from agent.loop import LoopResult
-from agent.phases import MapOutcome, build_phase, map_phase, profile_phase
+from agent.phases import MapOutcome, build_phase, map_phase
+from agent.review import finish_review, pending_reviews
 from agent.settings import Settings
+from agent.tool_backend import RunTools, open_tools
 from agent.tracing import Tracer
 from api.models import (
     ColumnProfile,
@@ -30,10 +37,16 @@ from api.models import (
     SourceFile,
 )
 from datagen.schemas import load_schema
+from tools.profiling import ColumnProfile as ToolColumnProfile
 from tools.profiling import FileProfile
-from tools.warehouse import FileInfo, ToolError, Warehouse
+from tools.warehouse import FileInfo, ToolError, Warehouse, load_file
 
-Reviewer = Callable[[Session, Run, Warehouse], None]
+Reviewer = Callable[[Session, Run], None]
+ACTIVE = (RunStatus.PROFILING, RunStatus.MAPPING, RunStatus.BUILDING)
+
+
+class RunFailed(Exception):
+    """A phase failed for a reason the run should record."""
 
 
 def new_run_id() -> str:
@@ -46,18 +59,56 @@ def _set_status(session: Session, run: Run, status: RunStatus, error: str | None
     session.commit()
 
 
-def _store_profiles(
-    session: Session, run: Run, profiled: list[tuple[FileInfo, FileProfile]]
-) -> dict[str, SourceFile]:
-    stored = {}
-    for file, profile in profiled:
-        source = SourceFile(
-            run_id=run.id,
-            warehouse_file_id=file.file_id,
-            filename=file.filename,
-            row_count=file.row_count,
-            sha256=file.sha256,
-        )
+def create_run(
+    session: Session,
+    *,
+    customer_name: str,
+    schema_name: str,
+    model_name: str | None = None,
+    run_id: str | None = None,
+) -> Run:
+    load_schema(schema_name)  # unknown schemas fail before anything is stored
+    run = Run(
+        id=run_id or new_run_id(),
+        customer_name=customer_name,
+        target_schema=schema_name,
+        model_name=model_name,
+    )
+    session.add(run)
+    session.commit()
+    return run
+
+
+def add_file(session: Session, settings: Settings, run: Run, path: Path) -> SourceFile:
+    """Load a file into the run's warehouse and record it. Re-adding the same content returns
+    the existing file. Raises ToolError for files that cannot be loaded."""
+    info = load_file(Warehouse.for_run(run.id, settings.data_dir), path)
+    for source in run.files:
+        if source.warehouse_file_id == info.file_id:
+            return source
+    source = SourceFile(
+        run_id=run.id,
+        warehouse_file_id=info.file_id,
+        filename=info.filename,
+        row_count=info.row_count,
+        sha256=info.sha256,
+        raw_table=info.table_name,
+    )
+    session.add(source)
+    session.commit()
+    session.expire(run, ["files"])
+    return source
+
+
+# --- Phases -----------------------------------------------------------------------------------
+
+
+def _profile(session: Session, run: Run, tools: RunTools, tracer: Tracer) -> None:
+    for source in run.files:
+        if source.profiles:
+            continue
+        with tracer.span(f"phase:profile:{source.filename}", "CHAIN"):
+            profile = tools.profile_file(source.warehouse_file_id)
         source.profiles = [
             ColumnProfile(
                 column_name=c.column_name,
@@ -67,13 +118,28 @@ def _store_profiles(
                 distinct_count=c.distinct_count,
                 sample_values=[t.model_dump() for t in c.top_values],
                 patterns=c.patterns,
+                profile=c.model_dump(),
             )
             for c in profile.columns
         ]
-        session.add(source)
-        stored[file.file_id] = source
-    session.commit()
-    return stored
+        session.commit()
+
+
+def _stored_profile(source: SourceFile) -> tuple[FileInfo, FileProfile]:
+    file = FileInfo(
+        file_id=source.warehouse_file_id,
+        filename=source.filename,
+        table_name=source.raw_table,
+        row_count=source.row_count,
+        sha256=source.sha256,
+    )
+    profile = FileProfile(
+        file_id=source.warehouse_file_id,
+        filename=source.filename,
+        row_count=source.row_count,
+        columns=[ToolColumnProfile.model_validate(p.profile) for p in source.profiles],
+    )
+    return file, profile
 
 
 def _store_outcome(session: Session, run: Run, source: SourceFile, outcome: MapOutcome) -> None:
@@ -121,6 +187,7 @@ def _store_outcome(session: Session, run: Run, source: SourceFile, outcome: MapO
             )
         )
     session.commit()
+    session.expire(run, ["mappings", "defects"])
 
 
 def _add_loop_stats(run: Run, loop: LoopResult | None) -> None:
@@ -131,28 +198,54 @@ def _add_loop_stats(run: Run, loop: LoopResult | None) -> None:
         run.completion_tokens += loop.completion_tokens
 
 
+def _map(
+    session: Session,
+    settings: Settings,
+    llm: LLM,
+    tracer: Tracer,
+    run: Run,
+    tools: RunTools,
+    retries: int,
+    sleep: Callable[[float], None],
+) -> None:
+    schema = load_schema(run.target_schema)
+    mapped = {m.file_id for m in run.mappings}
+    for source in run.files:
+        if source.id in mapped:
+            continue
+        file, profile = _stored_profile(source)
+        with tracer.span(f"phase:map:{source.filename}", "CHAIN"):
+            outcome = map_phase(
+                llm, tools, file, profile, schema,
+                threshold=settings.review_confidence_threshold,
+                max_steps=settings.agent_max_steps, tracer=tracer, retries=retries,
+                backoff_seconds=settings.llm_retry_backoff_seconds, sleep=sleep,
+            )  # fmt: skip
+        _add_loop_stats(run, outcome.loop)
+        if outcome.status != "submitted":
+            raise RunFailed(f"Mapping {source.filename} failed: {outcome.reason}")
+        _store_outcome(session, run, source, outcome)
+
+
 def _build(
     session: Session,
     settings: Settings,
     llm: LLM | None,
     tracer: Tracer,
     run: Run,
-    wh: Warehouse,
+    tools: RunTools,
     retries: int,
     sleep: Callable[[float], None],
 ) -> None:
-    """Build an awaiting-review run whose mappings are all decided. Raises _RunFailed."""
-    session.expire(run, ["mappings", "files", "defects"])
-    pending = [m for m in run.mappings if m.status == MappingStatus.PROPOSED]
-    if pending:
-        raise _RunFailed(f"{len(pending)} mappings still need review before the build")
+    if pending := pending_reviews(run):
+        raise RunFailed(f"{len(pending)} mappings still need review before the build")
     _set_status(session, run, RunStatus.BUILDING)
     with tracer.span("phase:build", "CHAIN"):
         outcome = build_phase(
-            session, run, wh, llm, load_schema(run.target_schema),
-            max_repairs=settings.build_max_repairs, max_steps=settings.agent_max_steps,
-            tracer=tracer, retries=retries, backoff_seconds=settings.llm_retry_backoff_seconds,
-            sleep=sleep,
+            session, run, Warehouse.for_run(run.id, settings.data_dir), tools, llm,
+            load_schema(run.target_schema), max_repairs=settings.build_max_repairs,
+            max_steps=settings.agent_max_steps, tracer=tracer, retries=retries,
+            backoff_seconds=settings.llm_retry_backoff_seconds, sleep=sleep,
         )  # fmt: skip
     _add_loop_stats(run, outcome.loop)
     run.build_report = {
@@ -162,8 +255,56 @@ def _build(
         "row_accounting": [{**a.model_dump(), "balanced": a.balanced} for a in outcome.accounting],
     }
     if outcome.status != "passed":
-        raise _RunFailed(outcome.reason or "build failed")
+        raise RunFailed(outcome.reason or "build failed")
     _set_status(session, run, RunStatus.DONE)
+
+
+# --- Driving a run ----------------------------------------------------------------------------
+
+
+def advance(
+    session: Session,
+    settings: Settings,
+    llm: LLM,
+    tracer: Tracer,
+    run: Run,
+    *,
+    review: Reviewer | None = None,
+    retries: int = 3,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Run:
+    """Run every phase that is due, under one trace. Ends at awaiting_review (a human must
+    decide), done, or failed with the reason in ``runs.error``."""
+    if run.status in ACTIVE:
+        raise ToolError(f"Run {run.id} is already {run.status}")
+    if not run.files:
+        raise ToolError(f"Run {run.id} has no files; upload at least one first")
+    run.model_name = llm.model
+    started = time.monotonic()
+    with tracer.span("run", "AGENT", inputs={"run_id": run.id, "from": run.status}) as root:
+        tracer.tag_trace({"run_id": run.id, "model": llm.model, "customer": run.customer_name})
+        run.trace_id = tracer.trace_id or run.trace_id
+        try:
+            with open_tools(settings, Warehouse.for_run(run.id, settings.data_dir)) as tools:
+                if any(not f.profiles for f in run.files):
+                    _set_status(session, run, RunStatus.PROFILING)
+                    _profile(session, run, tools, tracer)
+                if {f.id for f in run.files} - {m.file_id for m in run.mappings}:
+                    _set_status(session, run, RunStatus.MAPPING)
+                    _map(session, settings, llm, tracer, run, tools, retries, sleep)
+                _set_status(session, run, RunStatus.AWAITING_REVIEW)
+                if review is not None:
+                    review(session, run)
+                    finish_review(session, run)
+                if run.reviewed_at is not None:
+                    _build(session, settings, llm, tracer, run, tools, retries, sleep)
+        except (ToolError, RunFailed) as exc:
+            _set_status(session, run, RunStatus.FAILED, str(exc))
+        run.duration_seconds = round((run.duration_seconds or 0) + time.monotonic() - started, 2)
+        session.commit()
+        root.set_outputs({"status": run.status, "error": run.error})
+    tracer.flush()
+    return run
 
 
 def onboard(
@@ -180,83 +321,31 @@ def onboard(
     retries: int = 3,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Run:
-    schema = load_schema(schema_name)
-    run = Run(
-        id=run_id or new_run_id(),
+    """Create a run, load its files, and advance it (the CLI and eval path)."""
+    run = create_run(
+        session,
         customer_name=customer_name,
-        target_schema=schema_name,
+        schema_name=schema_name,
         model_name=llm.model,
+        run_id=run_id,
     )
-    session.add(run)
-    session.commit()
-    started = time.monotonic()
-    wh = Warehouse.for_run(run.id, settings.data_dir)
-
-    with tracer.span(
-        "run", "AGENT", inputs={"run_id": run.id, "schema": schema_name, "files": len(paths)}
-    ) as root:
-        tracer.tag_trace({"run_id": run.id, "model": llm.model, "customer": customer_name})
-        run.trace_id = tracer.trace_id
-        try:
-            _set_status(session, run, RunStatus.PROFILING)
-            with tracer.span("phase:profile", "CHAIN"):
-                profiled = profile_phase(wh, paths)
-            sources = _store_profiles(session, run, profiled)
-
-            _set_status(session, run, RunStatus.MAPPING)
-            for file, profile in profiled:
-                with tracer.span(f"phase:map:{file.filename}", "CHAIN"):
-                    outcome = map_phase(
-                        llm, wh, file, profile, schema,
-                        threshold=settings.review_confidence_threshold,
-                        max_steps=settings.agent_max_steps, tracer=tracer,
-                        retries=retries, backoff_seconds=settings.llm_retry_backoff_seconds,
-                        sleep=sleep,
-                    )  # fmt: skip
-                _add_loop_stats(run, outcome.loop)
-                if outcome.status != "submitted":
-                    raise _RunFailed(f"Mapping {file.filename} failed: {outcome.reason}")
-                _store_outcome(session, run, sources[file.file_id], outcome)
-            _set_status(session, run, RunStatus.AWAITING_REVIEW)
-            if review is not None:
-                review(session, run, wh)
-                _build(session, settings, llm, tracer, run, wh, retries, sleep)
-        except (ToolError, _RunFailed) as exc:
-            _set_status(session, run, RunStatus.FAILED, str(exc))
-        run.duration_seconds = round(time.monotonic() - started, 2)
-        session.commit()
-        root.set_outputs({"status": run.status, "error": run.error})
-    tracer.flush()
-    return run
+    try:
+        for path in paths:
+            add_file(session, settings, run, path)
+    except ToolError as exc:
+        _set_status(session, run, RunStatus.FAILED, str(exc))
+        return run
+    return advance(session, settings, llm, tracer, run, review=review, retries=retries, sleep=sleep)
 
 
-class _RunFailed(Exception):
-    pass
-
-
-def build_run(
-    session: Session,
-    settings: Settings,
-    llm: LLM | None,
-    tracer: Tracer,
-    run: Run,
-    *,
-    retries: int = 3,
-    sleep: Callable[[float], None] = time.sleep,
-) -> Run:
-    """Build a run that was reviewed after onboarding. Rebuilding replaces the dbt tables."""
-    if run.status not in (RunStatus.AWAITING_REVIEW, RunStatus.FAILED, RunStatus.DONE):
-        raise ToolError(f"Run {run.id} is {run.status}; it cannot be built now")
-    wh = Warehouse.for_run(run.id, settings.data_dir)
-    started = time.monotonic()
-    with tracer.span("build", "AGENT", inputs={"run_id": run.id}) as root:
-        tracer.tag_trace({"run_id": run.id, "model": llm.model if llm else "none"})
-        try:
-            _build(session, settings, llm, tracer, run, wh, retries, sleep)
-        except (ToolError, _RunFailed) as exc:
-            _set_status(session, run, RunStatus.FAILED, str(exc))
-        run.duration_seconds = round((run.duration_seconds or 0) + time.monotonic() - started, 2)
-        session.commit()
-        root.set_outputs({"status": run.status, "error": run.error})
-    tracer.flush()
-    return run
+def recover_interrupted(session: Session) -> list[str]:
+    """Mark runs left mid-phase by a crash or restart as failed, so they can be resumed."""
+    runs = session.query(Run).filter(Run.status.in_([s.value for s in ACTIVE])).all()
+    for run in runs:
+        _set_status(
+            session,
+            run,
+            RunStatus.FAILED,
+            f"Interrupted while {run.status}; POST /runs/{run.id}/start to resume",
+        )
+    return [r.id for r in runs]

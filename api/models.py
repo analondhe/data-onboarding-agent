@@ -54,6 +54,8 @@ class Run(Base):
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     # dbt results, row accounting per file, and repair count from the Build phase
     build_report: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # set when review decisions are submitted; a resumed run with it set goes on to build
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -74,6 +76,7 @@ class SourceFile(Base):
     filename: Mapped[str] = mapped_column(String(500))
     row_count: Mapped[int] = mapped_column(Integer)
     sha256: Mapped[str] = mapped_column(String(64))
+    raw_table: Mapped[str] = mapped_column(String(200))  # raw.<raw_table> in the warehouse
 
     run: Mapped[Run] = relationship(back_populates="files")
     profiles: Mapped[list[ColumnProfile]] = relationship(order_by="ColumnProfile.position")
@@ -92,6 +95,7 @@ class ColumnProfile(Base):
     distinct_count: Mapped[int] = mapped_column(Integer)
     sample_values: Mapped[list[Any]] = mapped_column(JSON)  # top values with counts
     patterns: Mapped[dict[str, Any]] = mapped_column(JSON)
+    profile: Mapped[dict[str, Any]] = mapped_column(JSON)  # the full tool profile
 
 
 class Mapping(Base):

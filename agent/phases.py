@@ -1,9 +1,13 @@
-"""Run phases: Profile (no model), Map (tool-calling loop), and Build (dbt, with repairs)."""
+"""Run phases: Map (tool-calling loop) and Build (dbt, with repairs).
+
+Profiling needs no model; the runner calls the profiling tool for each file directly.
+"""
 
 from __future__ import annotations
 
 import json
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,7 +27,8 @@ from agent.mapping import (
     route_for_review,
     validate_submission,
 )
-from agent.review import mapping_state, validated_sql
+from agent.review import mapping_state, source_columns, validated_sql
+from agent.tool_backend import RunTools
 from agent.tracing import Tracer
 from api.models import MappingStatus, ReviewEvent, Run
 from datagen.schemas import load_schema
@@ -32,26 +37,15 @@ from tools.dbt_runner import (
     FileAccounting,
     SourceFile,
     SourceMapping,
-    get_dbt_errors,
     render_project,
     row_accounting,
-    run_dbt,
 )
-from tools.profiling import FileProfile, get_column_profile, profile_file, sample_rows
-from tools.transforms import test_transform
-from tools.warehouse import FileInfo, ToolError, Warehouse, get_file, load_file, source_columns
+from tools.profiling import FileProfile
+from tools.warehouse import FileInfo, ToolError, Warehouse
 
 PROMPT_DIR = Path(__file__).parent / "prompts"
 TOP_VALUES_IN_PROMPT = 5
 PATTERNS_IN_PROMPT = 4
-
-
-# --- Profile phase -------------------------------------------------------------------------
-
-
-def profile_phase(wh: Warehouse, paths: list[Path]) -> list[tuple[FileInfo, FileProfile]]:
-    """Load and profile every file with the profiling functions directly; no model involved."""
-    return [(file, profile_file(wh, file.file_id)) for file in (load_file(wh, p) for p in paths)]
 
 
 # --- Map phase -----------------------------------------------------------------------------
@@ -121,7 +115,7 @@ def describe_task(file: FileInfo, profile: FileProfile, schema: dict[str, Any]) 
 
 
 def map_tools(
-    wh: Warehouse,
+    tools: RunTools,
     schema: dict[str, Any],
     source_columns: list[str],
     on_accept: Callable[[MappingSubmission], None],
@@ -152,20 +146,20 @@ def map_tools(
             "Return the stored profile of one source column: type, nulls, distinct count, "
             "min/max, top values, and value patterns.",
             GetColumnProfileArgs,
-            lambda a: get_column_profile(wh, a.file_id, a.column),
+            lambda a: tools.get_column_profile(a.file_id, a.column),
         ),
         Tool(
             "sample_rows",
             "Return up to 20 raw rows, optionally filtered by a SQL condition over one row.",
             SampleRowsArgs,
-            lambda a: sample_rows(wh, a.file_id, a.n, a.where),
+            lambda a: tools.sample_rows(a.file_id, a.n, a.where),
         ),
         Tool(
             "test_transform",
             "Run a transform expression over every row and report the share that converts to "
             "the target type, with up to 5 failing examples.",
             TransformTestArgs,
-            lambda a: test_transform(wh, a.file_id, a.sql_expression, a.target_type),
+            lambda a: tools.test_transform(a.file_id, a.sql_expression, a.target_type),
         ),
         Tool(
             "submit_mappings",
@@ -180,7 +174,7 @@ def map_tools(
 
 def map_phase(
     llm: LLM,
-    wh: Warehouse,
+    tools: RunTools,
     file: FileInfo,
     profile: FileProfile,
     schema: dict[str, Any],
@@ -198,7 +192,7 @@ def map_phase(
         llm,
         map_prompt(threshold),
         describe_task(file, profile, schema),
-        map_tools(wh, schema, columns, accepted.append),
+        map_tools(tools, schema, columns, accepted.append),
         max_steps=max_steps,
         tracer=tracer,
         retries=retries,
@@ -252,36 +246,32 @@ class BuildOutcome:
     loop: LoopResult | None = None
 
 
-def build_sources(run: Run, wh: Warehouse) -> list[SourceFile]:
+def build_sources(run: Run) -> list[SourceFile]:
     """Approved and edited mappings, grouped by source file, as the dbt renderer needs them."""
     sources = []
-    with wh.connect(read_only=True) as con:
-        for source in run.files:
-            mappings = [
-                m
-                for m in run.mappings
-                if m.file_id == source.id and m.status in BUILDABLE and m.source_column
-            ]
-            per_source: dict[str, int] = {}
-            for m in mappings:
-                per_source[m.source_column] = per_source.get(m.source_column, 0) + 1
-            info = get_file(con, source.warehouse_file_id)
-            sources.append(
-                SourceFile(
-                    file_id=info.file_id,
-                    table_name=info.table_name,
-                    raw_columns=source_columns(con, info),
-                    mappings=[
-                        SourceMapping(
-                            m.target_column,
-                            m.source_column,
-                            m.transform_sql,
-                            per_source[m.source_column] > 1,
-                        )
-                        for m in mappings
-                    ],
-                )
+    for source in run.files:
+        mappings = [
+            m
+            for m in run.mappings
+            if m.file_id == source.id and m.status in BUILDABLE and m.source_column
+        ]
+        per_source = Counter(m.source_column for m in mappings)
+        sources.append(
+            SourceFile(
+                file_id=source.warehouse_file_id,
+                table_name=source.raw_table,
+                raw_columns=source_columns(source),
+                mappings=[
+                    SourceMapping(
+                        m.target_column,
+                        m.source_column,
+                        m.transform_sql,
+                        per_source[m.source_column] > 1,
+                    )
+                    for m in mappings
+                ],
             )
+        )
     return sources
 
 
@@ -292,7 +282,7 @@ def _failure_summary(result: DbtRunResult) -> str:
     return "; ".join(f"{r.kind} {r.name}: {r.status} ({r.message})" for r in failed[:5])
 
 
-def describe_build_failure(run: Run, schema: dict[str, Any], wh: Warehouse) -> str:
+def describe_build_failure(run: Run, schema: dict[str, Any], tools: RunTools) -> str:
     types = {c["name"]: c["type"] for c in schema["columns"]}
     files = {f.id: f for f in run.files}
     mappings = [
@@ -307,7 +297,7 @@ def describe_build_failure(run: Run, schema: dict[str, Any], wh: Warehouse) -> s
         for m in run.mappings
         if m.status in BUILDABLE and m.source_column
     ]
-    errors = [e.model_dump() for e in get_dbt_errors(wh)]
+    errors = [e.model_dump() for e in tools.get_dbt_errors()]
     return (
         f"dbt build failed for target table {schema['table']!r}.\n\n"
         f"Mappings:\n{json.dumps(mappings, indent=1)}\n\n"
@@ -319,6 +309,7 @@ def build_phase(
     session: Session,
     run: Run,
     wh: Warehouse,
+    tools: RunTools,
     llm: LLM | None,
     schema: dict[str, Any],
     *,
@@ -333,9 +324,9 @@ def build_phase(
     rebuilds; then check row accounting."""
 
     def build(select: str | None = None) -> DbtRunResult:
-        render_project(wh, run.id, schema, build_sources(run, wh))
+        render_project(wh, run.id, schema, build_sources(run))
         with tracer.span("dbt:build", "TOOL", inputs={"select": select}) as span:
-            result = run_dbt(wh, select)
+            result = tools.run_dbt(select)
             span.set_outputs(result.model_dump(exclude={"results"}))
         return result
 
@@ -343,7 +334,7 @@ def build_phase(
     loop = None
     if not state["result"].success and llm is not None and max_repairs > 0:
         buildable = {m.id: m for m in run.mappings if m.status in BUILDABLE and m.source_column}
-        files = {f.id: f.warehouse_file_id for f in run.files}
+        files = {f.id: f for f in run.files}
 
         def update_transform(args: UpdateTransformArgs) -> dict[str, Any]:
             mapping = buildable.get(args.mapping_id)
@@ -352,7 +343,7 @@ def build_phase(
                     f"Unknown mapping_id {args.mapping_id}. Buildable mappings: "
                     f"{', '.join(str(i) for i in buildable)}"
                 )
-            sql = validated_sql(wh, files[mapping.file_id], args.transform_sql)
+            sql = validated_sql(files[mapping.file_id], args.transform_sql)
             before = mapping_state(mapping)
             mapping.transform_sql = sql
             session.add(
@@ -391,7 +382,7 @@ def build_phase(
             (PROMPT_DIR / "build.md")
             .read_text(encoding="utf-8")
             .replace("{max_repairs}", str(max_repairs)),
-            describe_build_failure(run, schema, wh),
+            describe_build_failure(run, schema, tools),
             [
                 Tool(
                     "update_transform",
@@ -410,13 +401,13 @@ def build_phase(
                     "get_dbt_errors",
                     "Error text and up to 5 failing rows for every failed model and test.",
                     NoArgs,
-                    lambda _: get_dbt_errors(wh),
+                    lambda _: tools.get_dbt_errors(),
                 ),
                 Tool(
                     "test_transform",
                     "Run an expression over every row and report the share that converts.",
                     TransformTestArgs,
-                    lambda a: test_transform(wh, a.file_id, a.sql_expression, a.target_type),
+                    lambda a: tools.test_transform(a.file_id, a.sql_expression, a.target_type),
                 ),
                 Tool(
                     "submit_build",
@@ -444,7 +435,7 @@ def build_phase(
         if loop is not None and loop.status != "submitted":
             outcome.reason += f" (repair stopped: {loop.reason})"
         return outcome
-    file_ids = [f.file_id for f in build_sources(run, wh)]
+    file_ids = [f.warehouse_file_id for f in run.files]
     outcome.accounting = row_accounting(wh, schema["table"], file_ids)
     unbalanced = [a for a in outcome.accounting if not a.balanced]
     if unbalanced:

@@ -8,15 +8,14 @@ import pytest
 from sqlalchemy import select
 
 from agent.llm import FakeLLM, FakeReply
-from agent.review import Decision, apply_review, approve_all
-from agent.runner import build_run, onboard
+from agent.review import Decision, apply_review, approve_all, finish_review
+from agent.runner import advance, onboard
 from agent.tracing import Tracer
 from api.db import session_factory
 from api.models import MappingStatus, ReviewEvent, RunStatus
 from datagen.schemas import load_schema
 from evals.corrupt import write_case
 from evals.oracle import answer_key_reviewer, oracle_responder, oracle_sql
-from tools.warehouse import Warehouse
 
 
 def make_case(tmp_path: Path, clean_rows, schemas, table: str, corruptions, seed: int = 4):
@@ -179,35 +178,32 @@ def test_run_reviewed_later_builds_only_after_every_decision(
     run, session = run_onboard(settings, FakeLLM(unsure), path, "invoices")
     assert run.status == RunStatus.AWAITING_REVIEW
     [pending] = [m for m in run.mappings if m.status == MappingStatus.PROPOSED]
+    no_model = FakeLLM([])  # fails the test if anything calls the model again
 
-    build_run(session, settings, None, Tracer(None), run)
-    assert (run.status, run.error) == (
-        RunStatus.FAILED,
-        "1 mappings still need review before the build",
-    )
+    assert finish_review(session, run) == 1
+    advance(session, settings, no_model, Tracer(None), run)
+    assert (run.status, run.reviewed_at) == (RunStatus.AWAITING_REVIEW, None)
 
-    apply_review(
-        session, run, Warehouse.for_run(run.id, settings.data_dir),
-        [Decision(mapping_id=pending.id, action="approve")], actor="tester",
-    )  # fmt: skip
-    build_run(session, settings, None, Tracer(None), run)
+    apply_review(session, run, [Decision(mapping_id=pending.id, action="approve")], "tester")
+    assert finish_review(session, run) == 0
+    advance(session, settings, no_model, Tracer(None), run)
     assert (run.status, run.error) == (RunStatus.DONE, None)
+    assert no_model.calls == []
 
 
 def test_edit_decisions_are_validated(settings, tmp_path, clean_rows, schemas):
     path, key = make_case(tmp_path, clean_rows, schemas, "invoices", ["rename_columns"])
     run, session = run_onboard(settings, FakeLLM(oracle_responder(key)), path, "invoices")
-    wh = Warehouse.for_run(run.id, settings.data_dir)
     mapping = run.mappings[0]
     with pytest.raises(Exception, match="Expected a single expression"):
         apply_review(
-            session, run, wh,
+            session, run,
             [Decision(mapping_id=mapping.id, action="edit", transform_sql="DROP TABLE raw.messy")],
             actor="tester",
         )  # fmt: skip
     column = mapping.source_column
     apply_review(
-        session, run, wh,
+        session, run,
         [Decision(mapping_id=mapping.id, action="edit", transform_sql=f'lower("{column}")')],
         actor="tester",
     )  # fmt: skip
