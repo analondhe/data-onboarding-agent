@@ -13,12 +13,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.4.0  # setup-uv publishes no floating major tags
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26.12.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
       - name: Install locked dependencies
-        run: uv sync --locked
+        run: |
+          uv sync --locked
+          make web-install
       - name: Lint
         run: make lint
       - name: Test
         run: make test
+      - name: Build the web app
+        run: make web-build
       - name: Generate eval cases
         run: make seed
       - name: Eval smoke test (FakeLLM)
@@ -32,6 +41,8 @@ jobs:
         run: docker compose config --quiet
       - name: Build the api/tools image
         run: docker build -t data-onboarding-agent:ci .
+      - name: Build the web image
+        run: docker build -t data-onboarding-web:ci web
 
   secret-scan:
     runs-on: ubuntu-24.04

@@ -283,7 +283,8 @@ def advance(
     started = time.monotonic()
     with tracer.span("run", "AGENT", inputs={"run_id": run.id, "from": run.status}) as root:
         tracer.tag_trace({"run_id": run.id, "model": llm.model, "customer": run.customer_name})
-        run.trace_id = tracer.trace_id or run.trace_id
+        if tracer.trace_id:
+            run.trace_id, run.trace_experiment_id = tracer.trace_id, tracer.experiment_id
         try:
             with open_tools(settings, Warehouse.for_run(run.id, settings.data_dir)) as tools:
                 if any(not f.profiles for f in run.files):

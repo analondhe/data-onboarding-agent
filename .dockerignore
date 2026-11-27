@@ -9,5 +9,5 @@ data
 evals/cases
 mlruns
 node_modules
-web/node_modules
-web/.next
+# the web app has its own image (web/Dockerfile)
+web

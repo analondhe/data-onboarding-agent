@@ -1,14 +1,16 @@
-.PHONY: up down logs seed test lint format onboard eval eval-smoke model
+.PHONY: up down logs seed test lint format onboard eval eval-smoke model web-install web-dev web-build
 
 UV ?= uv
+# Next.js otherwise sends anonymous usage telemetry during builds
+export NEXT_TELEMETRY_DISABLED := 1
 SEED ?= 42
 CUSTOMERS ?= 10000
 CASE_ROWS ?= 2000
 
-## Build and start the whole stack (api, tools, postgres, ollama, mlflow); waits for health checks
+## Build and start the whole stack (web, api, tools, postgres, ollama, mlflow); waits for health checks
 up:
 	docker compose up -d --build --wait
-	@echo "API http://localhost:8000/docs  ·  MLflow http://localhost:5001  ·  MCP tools http://localhost:8100/mcp"
+	@echo "Web app http://localhost:3000  ·  API http://localhost:8000/docs  ·  MLflow http://localhost:5001  ·  MCP tools http://localhost:8100/mcp"
 
 ## Stop the stack (data volumes are kept; `docker compose down -v` deletes them)
 down:
@@ -44,10 +46,25 @@ eval-smoke:
 test:
 	$(UV) run pytest --cov=tools --cov-report=term-missing --cov-fail-under=80
 
+## Lint Python (ruff) and the web app (eslint + TypeScript); run `make web-install` once first
 lint:
 	$(UV) run ruff check .
 	$(UV) run ruff format --check .
+	npm --prefix web run lint
+	npm --prefix web run typecheck
 
 format:
 	$(UV) run ruff check --fix .
 	$(UV) run ruff format .
+
+## Install the web app's locked npm dependencies into web/node_modules
+web-install:
+	npm --prefix web ci
+
+## Run the web app with hot reload on :3000 against the API on :8000
+web-dev:
+	npm --prefix web run dev
+
+## Production build of the web app (also type-checks)
+web-build:
+	npm --prefix web run build

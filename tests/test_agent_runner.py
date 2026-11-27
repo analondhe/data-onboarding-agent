@@ -78,6 +78,7 @@ def test_file_to_reviewed_mappings_with_one_trace(settings, case):
     assert llm_span.attributes["model"] == "fake-llm"
     assert llm_span.attributes["prompt_tokens"] > 0
     assert trace.info.tags["run_id"] == run.id
+    assert run.trace_experiment_id == trace.info.experiment_id
 
 
 def test_model_timeouts_fail_the_run_with_a_reason(settings, case):
