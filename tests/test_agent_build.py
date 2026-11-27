@@ -121,6 +121,43 @@ def test_failing_build_is_repaired_by_the_agent_and_recorded(
     assert repaired.transform_sql == event.after["transform_sql"]
 
 
+def test_a_transform_failing_on_many_values_is_repaired_although_dbt_passes(
+    settings, tmp_path, clean_rows, schemas
+):
+    path, key = make_case(tmp_path, clean_rows, schemas, "subscriptions", ["type_noise"])
+    [noise] = [d for d in key["defects"] if d["type"] == "type_noise"]
+    target = noise["target_columns"][0]
+    spec = next(c for c in schemas["subscriptions"]["columns"] if c["name"] == target)
+    mapping = next(m for m in key["mappings"] if m["target_column"] == target)
+    oracle = oracle_responder(key)
+    seen = {}
+
+    def respond(messages):
+        if messages[0]["content"].startswith("You repair a failing dbt build"):
+            seen["task"] = messages[1]["content"]
+            mappings = json.loads(re.search(r"Mappings:\n(.*?)\n\n", seen["task"], re.S)[1])
+            mapping_id = next(m["mapping_id"] for m in mappings if m["target_column"] == target)
+            fixed = oracle_sql(mapping, spec, {})
+            update = {"mapping_id": mapping_id, "transform_sql": fixed, "reason": "symbols"}
+            return FakeReply(tool_calls=[("update_transform", update), ("run_dbt", {})])
+        step = oracle(messages)
+        if step.tool_calls and step.tool_calls[0][0] == "submit_mappings":
+            for m in step.tool_calls[0][1]["mappings"]:
+                if m["target_column"] == target:  # a naive cast that fails on "$1,200.00"
+                    m["transform_sql"] = f'try_cast(trim("{m["source_column"]}") AS {spec["type"]})'
+        return step
+
+    run, _ = run_onboard(
+        settings, FakeLLM(respond), path, "subscriptions", answer_key_reviewer(key)
+    )
+    assert (run.status, run.error) == (RunStatus.DONE, None)
+    assert "Values the transforms cannot convert" in seen["task"]
+    assert run.build_report["repairs"] == 1
+    [accounting] = run.build_report["row_accounting"]
+    unconverted = accounting["reject_reasons"].get(f"could not convert {target}", 0)
+    assert unconverted / accounting["rows_in"] <= 0.05  # only the planted junk stays out
+
+
 def test_repairs_stop_at_the_limit_and_fail_with_the_last_error(
     settings, tmp_path, clean_rows, schemas
 ):

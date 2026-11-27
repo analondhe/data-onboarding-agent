@@ -16,6 +16,7 @@ htmlcov/
 data/
 evals/cases/
 evals/drift_cases/
+evals/benchmark_cases/
 
 # Tooling
 mlruns/

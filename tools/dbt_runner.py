@@ -106,6 +106,47 @@ def model_names(table: str) -> dict[str, str]:
     }
 
 
+class ConversionFailure(BaseModel):
+    target_column: str
+    source_column: str
+    rejected: int  # rows quarantined because this column's value did not convert
+    rows: int  # rows in the build
+    values: dict[str, int]  # most common source values that did not convert
+
+
+def conversion_failures(
+    wh: Warehouse, table: str, sources: dict[str, str], min_share: float, limit: int = 10
+) -> list[ConversionFailure]:
+    """Target columns whose transform failed on more than ``min_share`` of the rows, with the
+    source values it could not convert. ``sources`` maps target columns to source columns."""
+    names = model_names(table)
+    failures = []
+    with wh.connect(read_only=True) as con:
+        [(rows,)] = con.execute(f"SELECT count(*) FROM main.{names['checked_model']}").fetchall()
+        for target, source in sources.items():
+            hit = "list_contains(string_split(reject_reason, '; '), ?)"
+            reason = f"could not convert {target}"
+            [(rejected,)] = con.execute(
+                f"SELECT count(*) FROM main.{names['rejected_model']} WHERE {hit}", [reason]
+            ).fetchall()
+            if not rows or rejected / rows <= min_share:
+                continue
+            path = '$."' + source.replace('"', '\\"') + '"'
+            values = con.execute(
+                "SELECT coalesce(json_extract_string(_raw_values, ?), '(null)') AS v, count(*) "
+                f"FROM main.{names['rejected_model']} WHERE {hit} "
+                f"GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT {int(limit)}",
+                [path, reason],
+            ).fetchall()
+            failures.append(
+                ConversionFailure(
+                    target_column=target, source_column=source, rejected=rejected, rows=rows,
+                    values={v: n for v, n in values},
+                )
+            )  # fmt: skip
+    return failures
+
+
 def project_dir(wh: Warehouse) -> Path:
     return wh.path.parent / "dbt"
 

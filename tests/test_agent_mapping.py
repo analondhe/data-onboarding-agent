@@ -34,6 +34,7 @@ def valid_mappings() -> list[dict]:
         mapping("Start Date", "started_at", 'try_cast("Start Date" AS DATE)'),
         mapping("MRR", "monthly_amount_usd"),
         mapping("Seats", "seats"),
+        mapping("End Date", "canceled_at", 'try_cast("End Date" AS DATE)'),
     ]
 
 
@@ -98,6 +99,33 @@ def test_misplaced_defect_columns_are_normalized_not_rejected(given, expected):
     assert errors == []
     [d] = normalized.defects
     assert (d.source_column, d.target_column) == expected
+
+
+def test_an_optional_target_must_be_mapped_or_declared_unmapped():
+    without_canceled = [m for m in valid_mappings() if m["target_column"] != "canceled_at"]
+    _, errors = check(without_canceled)
+    assert errors == [
+        "optional target column 'canceled_at' has no mapping. Map it if a source column holds "
+        "it (it may be mostly empty), or list it in unmapped_targets with a reason"
+    ]
+    _, errors = check(
+        without_canceled, unmapped_targets=[{"target_column": "canceled_at", "reason": "absent"}]
+    )
+    assert errors == []
+
+
+def test_defects_in_columns_that_are_not_loaded_are_dropped():
+    defect = {"defect_type": "null_variants", "source_column": "notes", "description": "x"}
+    normalized, errors = check(valid_mappings(), defects=[defect])
+    assert (errors, normalized.defects) == ([], [])
+
+
+def test_value_drift_is_only_for_columns_with_allowed_values():
+    on_id = {"defect_type": "value_drift", "source_column": "Sub #", "description": "case"}
+    _, errors = check(valid_mappings(), defects=[on_id])
+    assert len(errors) == 1 and "are duplicate_rows" in errors[0]
+    on_plan = {"defect_type": "value_drift", "source_column": "plan_status", "description": "x"}
+    assert check(valid_mappings(), defects=[on_plan])[1] == []
 
 
 def test_unknown_defect_type_fails_argument_validation():

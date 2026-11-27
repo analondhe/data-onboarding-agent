@@ -124,6 +124,13 @@ def oracle_responder(key: dict[str, Any]) -> Callable[[list[Message]], FakeStep]
                 {"target_column": t, "reason": "no source column"}
                 for t in key["missing_target_columns"]
             ],
+            "unmapped_targets": [
+                {"target_column": t, "reason": "no source column"}
+                for t, spec in schema.items()
+                if not spec.get("required")
+                and t not in {m["target_column"] for m in key["mappings"]}
+                and t not in key["missing_target_columns"]
+            ],
             "defects": [
                 {
                     "defect_type": d["type"],

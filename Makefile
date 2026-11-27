@@ -1,4 +1,4 @@
-.PHONY: up down logs seed test lint format onboard eval eval-smoke eval-drift model web-install web-dev web-build pull-311
+.PHONY: up down logs seed test lint format onboard eval eval-smoke eval-drift benchmark-cases eval-benchmark model web-install web-dev web-build pull-311
 
 UV ?= uv
 # Next.js otherwise sends anonymous usage telemetry during builds
@@ -52,6 +52,14 @@ eval-smoke:
 ## for answer-key proposals); writes evals/results/<time>_drift_<model>.md
 eval-drift:
 	$(UV) run python -m evals.drift run $(EVAL_ARGS)
+
+## Download the Raha benchmark (hospital, flights, beers; Apache-2.0) into evals/benchmark_cases/
+benchmark-cases:
+	$(UV) run python -m evals.benchmark --out evals/benchmark_cases
+
+## Score the configured model on the Raha benchmark cases; writes evals/results/<time>_raha_<model>.md
+eval-benchmark:
+	$(UV) run python -m evals.run_evals --cases-dir evals/benchmark_cases --label raha $(EVAL_ARGS)
 
 ## Run all tests; tools/ must stay at 80% line coverage or above
 test:
