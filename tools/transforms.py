@@ -17,11 +17,13 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 
 from tools.warehouse import (
+    NULL_TOKENS,
     ROW_COLUMN,
     ToolError,
     Warehouse,
     get_file,
     quote_ident,
+    resolve_column,
     run_guarded,
     source_columns,
 )
@@ -142,6 +144,15 @@ def referenced_columns(sql: str, columns: list[str]) -> list[str]:
     return [c for c in columns if c.lower() in names]
 
 
+def rename_column(sql: str, old: str, new: str) -> str:
+    """Rewrite an expression so it reads column ``new`` wherever it read ``old``."""
+    tree = sqlglot.parse_one(sql, read="duckdb")
+    for node in tree.find_all(exp.Column):
+        if node.name.lower() == old.lower():
+            node.set("this", exp.to_identifier(new, quoted=True))
+    return tree.sql(dialect="duckdb", comments=False)
+
+
 class FailingExample(BaseModel):
     row: int
     input: dict[str, str | None]
@@ -227,3 +238,59 @@ def test_transform(
 
 # The tool is named by the spec; stop pytest from collecting it when tests import it.
 test_transform.__test__ = False  # type: ignore[attr-defined]
+
+
+class ValueCheck(BaseModel):
+    source_column: str
+    inputs: int  # rows whose source column holds a real value (not blank, not a null token)
+    failed: int  # of those, rows the expression does not turn into a valid target value
+    failure_rate: float  # failed / inputs (0.0 when there is no input)
+    failing_values: dict[str, int]  # most common failing source values, trimmed
+
+
+def check_values(
+    wh: Warehouse,
+    file_id: str,
+    sql_expression: str,
+    source_column: str,
+    target_type: str,
+    allowed: list[str] | None = None,
+    limit: int = 10,
+) -> ValueCheck:
+    """How often a transform fails on a file's real values: its output is NULL, does not cast
+    to ``target_type``, or (with ``allowed``) is not an allowed value. Blank cells and null
+    tokens such as "N/A" are not counted, so more empty values do not look like failures."""
+    target = validate_target_type(target_type)
+    with wh.connect(read_only=True) as con:
+        file = get_file(con, file_id)
+        columns = source_columns(con, file)
+        expression = validate_expression(sql_expression, columns)
+        column = quote_ident(resolve_column(columns, source_column))
+        tokens = ", ".join(f"'{t}'" for t in NULL_TOKENS)
+        bad = f"TRY_CAST(({expression}) AS {target}) IS NULL"
+        if allowed:
+            values = ", ".join("'" + v.replace("'", "''") + "'" for v in allowed)
+            bad += f" OR ({expression})::VARCHAR NOT IN ({values})"
+        evaluated = (
+            f"SELECT trim({column}) AS __value, ({bad}) AS __bad "
+            f"FROM raw.{quote_ident(file.table_name)} WHERE nullif(trim({column}), '') "
+            f"IS NOT NULL AND lower(trim({column})) NOT IN ({tokens})"
+        )
+        try:
+            _, [(inputs, failed)] = run_guarded(
+                con, f"SELECT count(*), count(*) FILTER (__bad) FROM ({evaluated})"
+            )
+            _, failing = run_guarded(
+                con,
+                f"SELECT __value, count(*) AS n FROM ({evaluated}) WHERE __bad "
+                f"GROUP BY 1 ORDER BY n DESC, 1 LIMIT {int(limit)}",
+            )
+        except duckdb.Error as exc:
+            raise ToolError(f"The transform failed when run on the data: {exc}") from exc
+    return ValueCheck(
+        source_column=source_column,
+        inputs=inputs,
+        failed=failed,
+        failure_rate=round(failed / inputs, 4) if inputs else 0.0,
+        failing_values={value: n for value, n in failing},
+    )

@@ -16,7 +16,15 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <Link href="/" className="text-lg font-semibold">
               Data Onboarding Agent
             </Link>
-            <span className="text-sm text-slate-500">Acme Cloud migrations</span>
+            <nav className="flex items-center gap-6 text-sm">
+              <Link href="/" className="text-slate-700 hover:text-indigo-700">
+                New run
+              </Link>
+              <Link href="/sources" className="text-slate-700 hover:text-indigo-700">
+                Sources
+              </Link>
+              <span className="text-slate-500">Acme Cloud migrations</span>
+            </nav>
           </div>
         </header>
         <main className="mx-auto max-w-6xl px-6 py-8">{children}</main>

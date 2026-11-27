@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from tools.transforms import validate_expression
 from tools.warehouse import (
+    NULL_TOKENS,
     ROW_COLUMN,
     FileInfo,
     ToolError,
@@ -33,8 +34,6 @@ MAX_CELL_CHARS = 200
 MAX_PATTERNS = 12
 TYPE_THRESHOLD = 0.5  # an inferred type must match at least this share of real values
 
-# Text that means "no value". Compared after trim and lower-casing.
-NULL_TOKENS = ("null", "none", "nil", "n/a", "na", "#n/a", "nan", "-", "--", "?", "missing")
 BOOLEAN_WORDS = ("true", "false", "t", "f", "yes", "no", "y", "n")
 _MONTH = r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
 _NUMBER = r"[+-]?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?"

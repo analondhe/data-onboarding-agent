@@ -1,0 +1,693 @@
+{
+ "meta": {
+  "timestamp": "20261127T055525Z",
+  "model": "qwen/qwen3-32b",
+  "proposals": "model"
+ },
+ "summary": {
+  "cases": 33,
+  "detection_recall": 1.0,
+  "detection_precision": 1.0,
+  "false_alarm_rate": 0.0,
+  "unchanged_loaded_without_model": 9,
+  "unchanged_cases": 9,
+  "correct_outcomes": 1.0,
+  "model_calls": 10,
+  "proposals_accepted": 1.0,
+  "per_check": {
+   "column_added": {
+    "tp": 3,
+    "fp": 0,
+    "fn": 0
+   },
+   "column_missing": {
+    "tp": 6,
+    "fp": 0,
+    "fn": 0
+   },
+   "column_renamed": {
+    "tp": 3,
+    "fp": 0,
+    "fn": 0
+   },
+   "format_change": {
+    "tp": 3,
+    "fp": 0,
+    "fn": 0
+   },
+   "new_category": {
+    "tp": 3,
+    "fp": 0,
+    "fn": 0
+   },
+   "null_rate_jump": {
+    "tp": 3,
+    "fp": 0,
+    "fn": 0
+   },
+   "volume_anomaly": {
+    "tp": 3,
+    "fp": 0,
+    "fn": 0
+   }
+  }
+ },
+ "cases": [
+  {
+   "case": "customers/column_added",
+   "kind": "column_added",
+   "expected": [
+    [
+     "column_added",
+     "legacy_notes"
+    ]
+   ],
+   "found": [
+    [
+     "column_added",
+     "legacy_notes"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 1,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "customers/column_missing_optional",
+   "kind": "column_missing_optional",
+   "expected": [
+    [
+     "column_missing",
+     "country"
+    ]
+   ],
+   "found": [
+    [
+     "column_missing",
+     "country"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "customers/column_missing_required",
+   "kind": "column_missing_required",
+   "expected": [
+    [
+     "column_missing",
+     "company_name"
+    ]
+   ],
+   "found": [
+    [
+     "column_missing",
+     "company_name"
+    ]
+   ],
+   "blocked_expected": true,
+   "status": "failed",
+   "error": "Load blocked: Column 'company_name' is missing. It fills the required column 'company_name', so the load is blocked. Fix the file, or onboard it as a new source.",
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "customers/column_renamed",
+   "kind": "column_renamed",
+   "expected": [
+    [
+     "column_renamed",
+     "Signup Date"
+    ]
+   ],
+   "found": [
+    [
+     "column_renamed",
+     "Signup Date"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 1,
+   "proposals_approved": 1
+  },
+  {
+   "case": "customers/format_change",
+   "kind": "format_change",
+   "expected": [
+    [
+     "format_change",
+     "signup_date"
+    ]
+   ],
+   "found": [
+    [
+     "format_change",
+     "signup_date"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 1,
+   "proposals": 1,
+   "proposals_approved": 1
+  },
+  {
+   "case": "customers/new_category",
+   "kind": "new_category",
+   "expected": [
+    [
+     "new_category",
+     "plan"
+    ]
+   ],
+   "found": [
+    [
+     "new_category",
+     "plan"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 1,
+   "proposals": 1,
+   "proposals_approved": 1
+  },
+  {
+   "case": "customers/null_rate_jump",
+   "kind": "null_rate_jump",
+   "expected": [
+    [
+     "null_rate_jump",
+     "is_active"
+    ]
+   ],
+   "found": [
+    [
+     "null_rate_jump",
+     "is_active"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "customers/unchanged_1",
+   "kind": "unchanged",
+   "expected": [],
+   "found": [],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "customers/unchanged_2",
+   "kind": "unchanged",
+   "expected": [],
+   "found": [],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "customers/unchanged_3",
+   "kind": "unchanged",
+   "expected": [],
+   "found": [],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "customers/volume_anomaly",
+   "kind": "volume_anomaly",
+   "expected": [
+    [
+     "volume_anomaly",
+     null
+    ]
+   ],
+   "found": [
+    [
+     "volume_anomaly",
+     null
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "invoices/column_added",
+   "kind": "column_added",
+   "expected": [
+    [
+     "column_added",
+     "legacy_notes"
+    ]
+   ],
+   "found": [
+    [
+     "column_added",
+     "legacy_notes"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 1,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "invoices/column_missing_optional",
+   "kind": "column_missing_optional",
+   "expected": [
+    [
+     "column_missing",
+     "paid_at"
+    ]
+   ],
+   "found": [
+    [
+     "column_missing",
+     "paid_at"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "invoices/column_missing_required",
+   "kind": "column_missing_required",
+   "expected": [
+    [
+     "column_missing",
+     "customer_id"
+    ]
+   ],
+   "found": [
+    [
+     "column_missing",
+     "customer_id"
+    ]
+   ],
+   "blocked_expected": true,
+   "status": "failed",
+   "error": "Load blocked: Column 'customer_id' is missing. It fills the required column 'customer_id', so the load is blocked. Fix the file, or onboard it as a new source.",
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "invoices/column_renamed",
+   "kind": "column_renamed",
+   "expected": [
+    [
+     "column_renamed",
+     "Invoice Date"
+    ]
+   ],
+   "found": [
+    [
+     "column_renamed",
+     "Invoice Date"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 1,
+   "proposals_approved": 1
+  },
+  {
+   "case": "invoices/format_change",
+   "kind": "format_change",
+   "expected": [
+    [
+     "format_change",
+     "invoice_date"
+    ]
+   ],
+   "found": [
+    [
+     "format_change",
+     "invoice_date"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 1,
+   "proposals": 1,
+   "proposals_approved": 1
+  },
+  {
+   "case": "invoices/new_category",
+   "kind": "new_category",
+   "expected": [
+    [
+     "new_category",
+     "status"
+    ]
+   ],
+   "found": [
+    [
+     "new_category",
+     "status"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 1,
+   "proposals": 1,
+   "proposals_approved": 1
+  },
+  {
+   "case": "invoices/null_rate_jump",
+   "kind": "null_rate_jump",
+   "expected": [
+    [
+     "null_rate_jump",
+     "status"
+    ]
+   ],
+   "found": [
+    [
+     "null_rate_jump",
+     "status"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "invoices/unchanged_1",
+   "kind": "unchanged",
+   "expected": [],
+   "found": [],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "invoices/unchanged_2",
+   "kind": "unchanged",
+   "expected": [],
+   "found": [],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "invoices/unchanged_3",
+   "kind": "unchanged",
+   "expected": [],
+   "found": [],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "invoices/volume_anomaly",
+   "kind": "volume_anomaly",
+   "expected": [
+    [
+     "volume_anomaly",
+     null
+    ]
+   ],
+   "found": [
+    [
+     "volume_anomaly",
+     null
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "subscriptions/column_added",
+   "kind": "column_added",
+   "expected": [
+    [
+     "column_added",
+     "legacy_notes"
+    ]
+   ],
+   "found": [
+    [
+     "column_added",
+     "legacy_notes"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 1,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "subscriptions/column_missing_optional",
+   "kind": "column_missing_optional",
+   "expected": [
+    [
+     "column_missing",
+     "canceled_at"
+    ]
+   ],
+   "found": [
+    [
+     "column_missing",
+     "canceled_at"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "subscriptions/column_missing_required",
+   "kind": "column_missing_required",
+   "expected": [
+    [
+     "column_missing",
+     "customer_id"
+    ]
+   ],
+   "found": [
+    [
+     "column_missing",
+     "customer_id"
+    ]
+   ],
+   "blocked_expected": true,
+   "status": "failed",
+   "error": "Load blocked: Column 'customer_id' is missing. It fills the required column 'customer_id', so the load is blocked. Fix the file, or onboard it as a new source.",
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "subscriptions/column_renamed",
+   "kind": "column_renamed",
+   "expected": [
+    [
+     "column_renamed",
+     "Started At"
+    ]
+   ],
+   "found": [
+    [
+     "column_renamed",
+     "Started At"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 1,
+   "proposals_approved": 1
+  },
+  {
+   "case": "subscriptions/format_change",
+   "kind": "format_change",
+   "expected": [
+    [
+     "format_change",
+     "started_at"
+    ]
+   ],
+   "found": [
+    [
+     "format_change",
+     "started_at"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 2,
+   "proposals": 1,
+   "proposals_approved": 1
+  },
+  {
+   "case": "subscriptions/new_category",
+   "kind": "new_category",
+   "expected": [
+    [
+     "new_category",
+     "plan"
+    ]
+   ],
+   "found": [
+    [
+     "new_category",
+     "plan"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 1,
+   "proposals": 1,
+   "proposals_approved": 1
+  },
+  {
+   "case": "subscriptions/null_rate_jump",
+   "kind": "null_rate_jump",
+   "expected": [
+    [
+     "null_rate_jump",
+     "seats"
+    ]
+   ],
+   "found": [
+    [
+     "null_rate_jump",
+     "seats"
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "subscriptions/unchanged_1",
+   "kind": "unchanged",
+   "expected": [],
+   "found": [],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "subscriptions/unchanged_2",
+   "kind": "unchanged",
+   "expected": [],
+   "found": [],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "subscriptions/unchanged_3",
+   "kind": "unchanged",
+   "expected": [],
+   "found": [],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  },
+  {
+   "case": "subscriptions/volume_anomaly",
+   "kind": "volume_anomaly",
+   "expected": [
+    [
+     "volume_anomaly",
+     null
+    ]
+   ],
+   "found": [
+    [
+     "volume_anomaly",
+     null
+    ]
+   ],
+   "blocked_expected": false,
+   "status": "done",
+   "error": null,
+   "model_calls": 0,
+   "proposals": 0,
+   "proposals_approved": 0
+  }
+ ]
+}

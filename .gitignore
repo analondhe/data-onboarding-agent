@@ -15,6 +15,7 @@ htmlcov/
 # Generated data (clean tables, per-run warehouses) and eval cases
 data/
 evals/cases/
+evals/drift_cases/
 
 # Tooling
 mlruns/

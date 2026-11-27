@@ -7,6 +7,7 @@
 **/__pycache__
 data
 evals/cases
+evals/drift_cases
 mlruns
 node_modules
 # the web app has its own image (web/Dockerfile)

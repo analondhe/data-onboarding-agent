@@ -29,6 +29,11 @@ file_{{ loop.index }} as (
                 then 'could not convert {{ col.name }}'
             when "{{ col.name }}__has_input" and "{{ col.name }}__out" is null
                 then 'could not convert {{ col.name }}'
+            {%- if col.allowed_sql %}
+            when try_cast("{{ col.name }}__out" as {{ col.type }})::varchar
+                not in ({{ col.allowed_sql }})
+                then 'new category {{ col.name }}'
+            {%- endif %}
         end as "{{ col.name }}__error"
         {%- endfor %}
     from file_{{ loop.index }}_raw

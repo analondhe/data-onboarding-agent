@@ -22,6 +22,8 @@ from pydantic import BaseModel
 
 ROW_COLUMN = "_row"
 SUPPORTED_SUFFIXES = {".csv": "csv", ".tsv": "csv", ".txt": "csv", ".parquet": "parquet"}
+# Text that means "no value". Compared after trim and lower-casing.
+NULL_TOKENS = ("null", "none", "nil", "n/a", "na", "#n/a", "nan", "-", "--", "?", "missing")
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 _SCHEMA_DDL = """

@@ -4,8 +4,13 @@
 resumes from its last completed phase:
 
 - a file without stored profiles is profiled;
-- a file without mappings is mapped (files mapped earlier keep their mappings);
-- once review is finished (``runs.reviewed_at``), the run is built.
+- a recurring load is checked for drift against its source's contract (no model call), and is
+  refused when a required column is missing;
+- a file without mappings is mapped: all of it for an onboarding run; for a recurring load, the
+  saved mappings are reused and only changed columns go to the model, then to review;
+- once review is finished (``runs.reviewed_at``), the run is built. A recurring load with
+  nothing to review is built straight away, its rows are upserted into the source's table, and
+  a new contract version is saved when its mappings or columns changed.
 
 The API calls ``advance`` from its background worker; the CLI and evals call ``onboard``, which
 creates the run, loads the files, and advances it with an automatic reviewer.
@@ -20,9 +25,11 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from agent import contracts
+from agent.drift import Finding, detect
 from agent.llm import LLM
 from agent.loop import LoopResult
-from agent.phases import MapOutcome, build_phase, map_phase
+from agent.phases import MapOutcome, build_phase, drift_map_phase, map_phase
 from agent.review import finish_review, pending_reviews
 from agent.settings import Settings
 from agent.tool_backend import RunTools, open_tools
@@ -31,14 +38,17 @@ from api.models import (
     ColumnProfile,
     Defect,
     Mapping,
+    MappingContract,
     MappingStatus,
     Run,
     RunStatus,
+    RunType,
     SourceFile,
 )
 from datagen.schemas import load_schema
 from tools.profiling import ColumnProfile as ToolColumnProfile
 from tools.profiling import FileProfile
+from tools.transforms import rename_column, validate_expression
 from tools.warehouse import FileInfo, ToolError, Warehouse, load_file
 
 Reviewer = Callable[[Session, Run], None]
@@ -76,6 +86,36 @@ def create_run(
     )
     session.add(run)
     session.commit()
+    return run
+
+
+def create_load(
+    session: Session,
+    settings: Settings,
+    contract: MappingContract,
+    path: Path,
+    *,
+    run_id: str | None = None,
+) -> Run:
+    """A recurring load of one file, checked against the latest version of the contract's
+    source. Raises ToolError for files that cannot be loaded (the run is then deleted)."""
+    latest = contracts.latest_version(session, contract.customer_name, contract.source_name)
+    assert latest is not None  # the contract itself is a version of its source
+    run = Run(
+        id=run_id or new_run_id(),
+        customer_name=latest.customer_name,
+        target_schema=latest.target_schema,
+        run_type=RunType.RECURRING,
+        contract_id=latest.id,
+    )
+    session.add(run)
+    session.commit()
+    try:
+        add_file(session, settings, run, path)
+    except ToolError:
+        session.delete(run)
+        session.commit()
+        raise
     return run
 
 
@@ -227,6 +267,106 @@ def _map(
         _store_outcome(session, run, source, outcome)
 
 
+def _check_drift(session: Session, settings: Settings, run: Run) -> MappingContract:
+    """Run the drift checks once per load; raise when a finding blocks the load."""
+    contract = session.get(MappingContract, run.contract_id)
+    if contract is None:
+        raise RunFailed(f"Run {run.id} refers to a missing source contract {run.contract_id}")
+    if run.drift is None:
+        [source] = run.files
+        _, profile = _stored_profile(source)
+        findings = detect(
+            contract, profile, Warehouse.for_run(run.id, settings.data_dir),
+            load_schema(run.target_schema), contracts.recent_row_counts(session, contract),
+        )  # fmt: skip
+        run.drift = [f.model_dump() for f in findings]
+        session.commit()
+    blocked = [d["message"] for d in run.drift if d["action"] == "block"]
+    if blocked:
+        raise RunFailed("Load blocked: " + " ".join(blocked))
+    return contract
+
+
+def _map_recurring(
+    session: Session,
+    settings: Settings,
+    llm: LLM,
+    tracer: Tracer,
+    run: Run,
+    tools: RunTools,
+    contract: MappingContract,
+    retries: int,
+    sleep: Callable[[float], None],
+) -> None:
+    """Reuse the contract's mappings; propose changes only for the columns that drifted.
+    Nothing is stored until the model (when needed) has answered, so a failure leaves the file
+    unmapped and a resume maps it again."""
+    [source] = run.files
+    file, profile = _stored_profile(source)
+    columns = [c.column_name for c in profile.columns]
+    findings = [Finding.model_validate(d) for d in run.drift or []]
+    renamed = {f.details["old"]: f for f in findings if f.check == "column_renamed"}
+    to_model = [f for f in findings if f.check in ("column_added", "format_change", "new_category")]
+    remapped = {f.source_column for f in to_model}
+    rows: list[Mapping] = []
+    saved: list[dict[str, str]] = []
+    for m in contract.mappings:
+        old = m["source_column"]
+        if old in renamed:
+            finding = renamed[old]
+            new = finding.details["new"]
+            rows.append(
+                Mapping(
+                    run_id=run.id, file_id=source.id, source_column=new,
+                    target_table=run.target_schema, target_column=m["target_column"],
+                    transform_sql=validate_expression(
+                        rename_column(m["transform_sql"], old, new), columns
+                    ),
+                    confidence=finding.details["similarity"],
+                    reason=f"Saved mapping from '{old}', which seems to be renamed to '{new}'",
+                    status=MappingStatus.PROPOSED, review_reason=finding.message,
+                )
+            )  # fmt: skip
+            saved.append({**m, "source_column": new})
+        elif old in columns and old not in remapped:
+            rows.append(
+                Mapping(
+                    run_id=run.id, file_id=source.id, source_column=old,
+                    target_table=run.target_schema, target_column=m["target_column"],
+                    transform_sql=m["transform_sql"], confidence=1.0,
+                    reason=f"Saved mapping (source version {contract.version})",
+                    status=MappingStatus.APPROVED, review_reason=None,
+                )
+            )  # fmt: skip
+            saved.append(m)
+    outcome = None
+    if to_model:
+        with tracer.span(f"phase:drift-map:{source.filename}", "CHAIN"):
+            outcome = drift_map_phase(
+                llm, tools, file, profile, load_schema(run.target_schema),
+                saved=saved, changes=to_model, threshold=settings.review_confidence_threshold,
+                max_steps=settings.agent_max_steps, tracer=tracer, retries=retries,
+                backoff_seconds=settings.llm_retry_backoff_seconds, sleep=sleep,
+            )  # fmt: skip
+        _add_loop_stats(run, outcome.loop)
+        if outcome.status != "submitted":
+            raise RunFailed(f"Mapping the changed columns failed: {outcome.reason}")
+    session.add_all(rows)
+    if outcome is not None:
+        _store_outcome(session, run, source, outcome)
+    else:
+        session.commit()
+        session.expire(run, ["mappings"])
+
+
+def _load_into_source(session: Session, settings: Settings, run: Run) -> None:
+    """After a recurring build: upsert the rows, and version the contract if anything changed."""
+    contract = session.get(MappingContract, run.contract_id)
+    contracts.load_into_source(session, settings, run, contract)
+    if contracts.changed_since(run, contract):
+        contracts.new_version(session, settings, run, contract.source_name)
+
+
 def _build(
     session: Session,
     settings: Settings,
@@ -246,6 +386,7 @@ def _build(
             load_schema(run.target_schema), max_repairs=settings.build_max_repairs,
             max_steps=settings.agent_max_steps, tracer=tracer, retries=retries,
             backoff_seconds=settings.llm_retry_backoff_seconds, sleep=sleep,
+            quarantine_new_categories=run.run_type == RunType.RECURRING,
         )  # fmt: skip
     _add_loop_stats(run, outcome.loop)
     run.build_report = {
@@ -256,6 +397,8 @@ def _build(
     }
     if outcome.status != "passed":
         raise RunFailed(outcome.reason or "build failed")
+    if run.run_type == RunType.RECURRING:
+        _load_into_source(session, settings, run)
     _set_status(session, run, RunStatus.DONE)
 
 
@@ -287,16 +430,25 @@ def advance(
             run.trace_id, run.trace_experiment_id = tracer.trace_id, tracer.experiment_id
         try:
             with open_tools(settings, Warehouse.for_run(run.id, settings.data_dir)) as tools:
+                recurring = run.run_type == RunType.RECURRING
                 if any(not f.profiles for f in run.files):
                     _set_status(session, run, RunStatus.PROFILING)
                     _profile(session, run, tools, tracer)
+                contract = _check_drift(session, settings, run) if recurring else None
                 if {f.id for f in run.files} - {m.file_id for m in run.mappings}:
                     _set_status(session, run, RunStatus.MAPPING)
-                    _map(session, settings, llm, tracer, run, tools, retries, sleep)
+                    if contract is not None:
+                        _map_recurring(
+                            session, settings, llm, tracer, run, tools, contract, retries, sleep
+                        )
+                    else:
+                        _map(session, settings, llm, tracer, run, tools, retries, sleep)
                 _set_status(session, run, RunStatus.AWAITING_REVIEW)
                 if review is not None:
                     review(session, run)
                     finish_review(session, run)
+                elif recurring:
+                    finish_review(session, run)  # nothing to review: the load goes on
                 if run.reviewed_at is not None:
                     _build(session, settings, llm, tracer, run, tools, retries, sleep)
         except (ToolError, RunFailed) as exc:

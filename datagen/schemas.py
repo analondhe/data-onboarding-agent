@@ -8,7 +8,8 @@ from typing import Any
 import yaml
 
 SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas"
-TABLES = ("customers", "subscriptions", "invoices")
+TABLES = ("customers", "subscriptions", "invoices")  # generated Acme Cloud tables with eval cases
+TARGETS = (*TABLES, "service_requests")  # every target table a run can load into (311 last)
 
 
 def load_schema(name: str, schema_dir: Path = SCHEMA_DIR) -> dict[str, Any]:

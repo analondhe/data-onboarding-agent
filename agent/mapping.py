@@ -49,9 +49,17 @@ class ReviewedMapping(ProposedMapping):
 
 
 def validate_submission(
-    submission: MappingSubmission, schema: dict[str, Any], source_columns: list[str]
+    submission: MappingSubmission,
+    schema: dict[str, Any],
+    source_columns: list[str],
+    *,
+    fixed_targets: frozenset[str] = frozenset(),
+    mappable: list[str] | None = None,
 ) -> tuple[MappingSubmission, list[str]]:
-    """Return the submission with normalized SQL, and every problem the model must fix."""
+    """Return the submission with normalized SQL, and every problem the model must fix.
+
+    For a recurring load, ``fixed_targets`` are already filled by saved mappings and
+    ``mappable`` limits which source columns the model may map."""
     targets = {c["name"]: c for c in schema["columns"]}
     target_list = ", ".join(targets)
     errors: list[str] = []
@@ -62,6 +70,10 @@ def validate_submission(
         label = f"mapping {m.source_column!r} -> {m.target_column!r}"
         if m.target_column not in targets:
             errors.append(f"{label}: unknown target column. Target columns are: {target_list}")
+        elif m.target_column in fixed_targets:
+            errors.append(
+                f"{label}: target {m.target_column!r} keeps its saved mapping; leave it out"
+            )
         elif m.target_column in seen_targets:
             errors.append(
                 f"{label}: target {m.target_column!r} is already mapped from "
@@ -69,6 +81,12 @@ def validate_submission(
             )
         else:
             seen_targets[m.target_column] = m.source_column
+        if (
+            mappable is not None
+            and m.source_column in source_columns
+            and (m.source_column not in mappable)
+        ):
+            errors.append(f"{label}: only map these source columns: {', '.join(mappable)}")
         if m.source_column not in source_columns:
             errors.append(
                 f"{label}: unknown source column. Source columns are: {', '.join(source_columns)}"
@@ -99,7 +117,12 @@ def validate_submission(
         declared_missing.add(missing.target_column)
 
     for name, column in targets.items():
-        if column.get("required") and name not in seen_targets and name not in declared_missing:
+        if (
+            column.get("required")
+            and name not in seen_targets
+            and name not in declared_missing
+            and name not in fixed_targets
+        ):
             errors.append(
                 f"required target column {name!r} has no mapping. Map it, or list it in "
                 "missing_required with a reason if no source column holds it"

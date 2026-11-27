@@ -98,6 +98,49 @@ def test_a_run_completes_through_the_api(client, model, case):
     )
 
 
+def test_a_finished_run_is_saved_as_a_source_and_loaded_again(client, model, case):
+    content, key = case
+    model["llm"] = FakeLLM(oracle_responder(key))
+    run_id = new_run(client)
+    upload(client, run_id, "export.csv", content)
+    client.post(f"/runs/{run_id}/start")
+    pending = [m["id"] for m in client.get(f"/runs/{run_id}/mappings").json()
+               if m["status"] == "proposed"]  # fmt: skip
+    client.post(f"/runs/{run_id}/review", json={"decisions": [
+        {"mapping_id": i, "action": "approve"} for i in pending]})  # fmt: skip
+    loaded = client.get(f"/runs/{run_id}/report").json()["build"]["row_accounting"][0]["loaded"]
+
+    saved = client.post(f"/runs/{run_id}/contract", json={"source_name": "billing-export"})
+    assert saved.status_code == 201, saved.text
+    contract = saved.json()
+    assert (contract["version"], contract["table_rows"], contract["loads"]) == (1, loaded, 0)
+    assert client.get(f"/runs/{run_id}").json()["saved_contract_id"] == contract["id"]
+    again = client.post(f"/runs/{run_id}/contract", json={"source_name": "billing-export"})
+    assert again.status_code == 409
+    assert [c["id"] for c in client.get("/contracts").json()] == [contract["id"]]
+
+    response = client.post(
+        f"/contracts/{contract['id']}/loads", files={"file": ("next.csv", io.BytesIO(content))}
+    )
+    assert response.status_code == 202, response.text
+    load = client.get(f"/runs/{response.json()['id']}").json()
+    assert (load["run_type"], load["status"], load["steps"], load["drift"]) == (
+        "recurring", "done", 0, [],
+    )  # fmt: skip
+    report = client.get(f"/runs/{load['id']}/report").json()
+    assert report["build"]["load"] == {
+        "table": "subscriptions", "inserted": 0, "updated": loaded, "total_rows": loaded,
+    }  # fmt: skip
+    detail = client.get(f"/contracts/{contract['id']}").json()
+    assert [r["id"] for r in detail["recent_loads"]] == [load["id"]]
+    assert detail["last_load"]["status"] == "done"
+
+    empty = client.post(
+        f"/contracts/{contract['id']}/loads", files={"file": ("empty.csv", io.BytesIO(b""))}
+    )
+    assert empty.status_code == 422
+
+
 @pytest.mark.parametrize(
     ("name", "content", "code", "message"),
     [

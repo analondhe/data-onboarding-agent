@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 from collections.abc import Callable
 from pathlib import Path
 
@@ -48,6 +49,21 @@ def load_csv(wh: Warehouse, tmp_path: Path) -> Callable[..., FileInfo]:
         return load_file(wh, path)
 
     return load
+
+
+@pytest.fixture
+def write_rows(tmp_path: Path) -> Callable[..., Path]:
+    """Write rows (dicts with the same keys) as a CSV file under tmp_path; returns its path."""
+
+    def write(rows: list[dict[str, str]], name: str) -> Path:
+        path = tmp_path / name
+        with path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+        return path
+
+    return write
 
 
 @pytest.fixture(scope="session")

@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from agent.defects import DEFECT_DESCRIPTIONS
+from agent.drift import Finding
 from agent.llm import LLM
 from agent.loop import LoopResult, SubmitOutcome, Tool, run_loop
 from agent.mapping import (
@@ -90,22 +91,22 @@ def map_prompt(threshold: float) -> str:
     )
 
 
+def _column_summary(c: Any) -> dict[str, Any]:
+    return {
+        "column": c.column_name,
+        "inferred_type": c.inferred_type,
+        "type_match_rate": c.type_match_rate,
+        "null_count": c.null_count,
+        "null_like_count": c.null_like_count,
+        "distinct_count": c.distinct_count,
+        "top_values": [t.value[:60] for t in c.top_values[:TOP_VALUES_IN_PROMPT]],
+        "patterns": dict(list(c.patterns.items())[:PATTERNS_IN_PROMPT]),
+    }
+
+
 def describe_task(file: FileInfo, profile: FileProfile, schema: dict[str, Any]) -> str:
     """The first user message: compact source profiles plus the target schema."""
-    columns = []
-    for c in profile.columns:
-        columns.append(
-            {
-                "column": c.column_name,
-                "inferred_type": c.inferred_type,
-                "type_match_rate": c.type_match_rate,
-                "null_count": c.null_count,
-                "null_like_count": c.null_like_count,
-                "distinct_count": c.distinct_count,
-                "top_values": [t.value[:60] for t in c.top_values[:TOP_VALUES_IN_PROMPT]],
-                "patterns": dict(list(c.patterns.items())[:PATTERNS_IN_PROMPT]),
-            }
-        )
+    columns = [_column_summary(c) for c in profile.columns]
     return (
         f"Map file {file.filename!r} (file_id {file.file_id!r}, {file.row_count} rows) onto the "
         f"target schema {schema['table']!r}.\n\n"
@@ -119,9 +120,14 @@ def map_tools(
     schema: dict[str, Any],
     source_columns: list[str],
     on_accept: Callable[[MappingSubmission], None],
+    *,
+    fixed_targets: frozenset[str] = frozenset(),
+    mappable: list[str] | None = None,
 ) -> list[Tool]:
     def submit(args: MappingSubmission) -> SubmitOutcome:
-        normalized, errors = validate_submission(args, schema, source_columns)
+        normalized, errors = validate_submission(
+            args, schema, source_columns, fixed_targets=fixed_targets, mappable=mappable
+        )
         if errors:
             return SubmitOutcome(accepted=False, errors=errors)
         on_accept(normalized)
@@ -207,6 +213,98 @@ def map_phase(
         status="submitted",
         reason=None,
         mappings=mappings,
+        missing_required=submission.missing_required,
+        defects=defects,
+        loop=loop,
+    )
+
+
+def describe_drift_task(
+    file: FileInfo,
+    profile: FileProfile,
+    schema: dict[str, Any],
+    saved: list[dict[str, Any]],
+    changes: list[Finding],
+) -> str:
+    """The first user message of a recurring load: what changed, the saved mappings that
+    stay, and profiles of only the columns to map."""
+    to_map = {f.source_column for f in changes}
+    columns = [_column_summary(c) for c in profile.columns if c.column_name in to_map]
+    changed = [
+        {
+            "source_column": f.source_column,
+            "change": f.check,
+            "what_changed": f.message,
+            **({"previous_target": f.target_column} if f.target_column else {}),
+            **(
+                {"previous_transform_sql": f.details["transform_sql"]}
+                if "transform_sql" in f.details
+                else {}
+            ),
+        }
+        for f in changes
+    ]
+    return (
+        f"File {file.filename!r} (file_id {file.file_id!r}, {file.row_count} rows) is a new "
+        f"batch from a source whose mappings onto {schema['table']!r} were already approved. "
+        "The saved mappings below stay as they are; do not submit them again.\n\n"
+        "Some columns changed. Map only these source columns: "
+        f"{', '.join(sorted(to_map))}. For a column with a new format or new values, write a "
+        "transform for its previous target that handles both the old and the new values (map "
+        "new category variants onto allowed values). Leave a new column out if no target "
+        "column without a saved mapping holds it. Every proposal goes to a person for review.\n\n"
+        f"Changes:\n{json.dumps(changed, indent=1)}\n\n"
+        f"Saved mappings (fixed):\n{json.dumps(saved, indent=1)}\n\n"
+        f"Source columns to map:\n{json.dumps(columns, indent=1)}\n\n"
+        f"Target schema:\n{json.dumps(schema, indent=1)}"
+    )
+
+
+def drift_map_phase(
+    llm: LLM,
+    tools: RunTools,
+    file: FileInfo,
+    profile: FileProfile,
+    schema: dict[str, Any],
+    *,
+    saved: list[dict[str, Any]],
+    changes: list[Finding],
+    threshold: float,
+    max_steps: int,
+    tracer: Tracer,
+    retries: int = 3,
+    backoff_seconds: float = 5.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> MapOutcome:
+    """Map only the changed columns of a recurring load; every proposal goes to review."""
+    accepted: list[MappingSubmission] = []
+    reasons = {f.source_column: f.message for f in changes}
+    loop = run_loop(
+        llm,
+        map_prompt(threshold),
+        describe_drift_task(file, profile, schema, saved, changes),
+        map_tools(
+            tools, schema, [c.column_name for c in profile.columns], accepted.append,
+            fixed_targets=frozenset(m["target_column"] for m in saved),
+            mappable=sorted(reasons),
+        ),
+        max_steps=max_steps,
+        tracer=tracer,
+        retries=retries,
+        backoff_seconds=backoff_seconds,
+        sleep=sleep,
+    )  # fmt: skip
+    if loop.status != "submitted":
+        return MapOutcome(status="failed", reason=loop.reason, loop=loop)
+    submission = accepted[-1]
+    mappings, defects = route_for_review(submission, threshold)
+    return MapOutcome(
+        status="submitted",
+        reason=None,
+        mappings=[
+            m.model_copy(update={"needs_review": True, "review_reason": reasons[m.source_column]})
+            for m in mappings
+        ],
         missing_required=submission.missing_required,
         defects=defects,
         loop=loop,
@@ -319,12 +417,16 @@ def build_phase(
     retries: int = 3,
     backoff_seconds: float = 5.0,
     sleep: Callable[[float], None] = time.sleep,
+    quarantine_new_categories: bool = False,
 ) -> BuildOutcome:
     """Render and run dbt; on failure let the model repair transforms up to ``max_repairs``
     rebuilds; then check row accounting."""
 
     def build(select: str | None = None) -> DbtRunResult:
-        render_project(wh, run.id, schema, build_sources(run))
+        render_project(
+            wh, run.id, schema, build_sources(run),
+            quarantine_new_categories=quarantine_new_categories,
+        )  # fmt: skip
         with tracer.span("dbt:build", "TOOL", inputs={"select": select}) as span:
             result = tools.run_dbt(select)
             span.set_outputs(result.model_dump(exclude={"results"}))
