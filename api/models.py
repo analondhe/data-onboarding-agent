@@ -52,6 +52,8 @@ class Run(Base):
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # dbt results, row accounting per file, and repair count from the Build phase
+    build_report: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now

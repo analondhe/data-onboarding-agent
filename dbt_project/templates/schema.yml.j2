@@ -1,0 +1,25 @@
+version: 2
+
+models:
+  - name: {{ staging_model }}
+    description: "{{ table_description }}"
+    columns:
+      {%- for col in columns %}
+      - name: {{ col.name }}
+        {%- if col.tests %}
+        data_tests:
+          {%- for test in col.tests %}
+          {%- if test == "accepted_values" %}
+          - accepted_values:
+              arguments:
+                values: {{ col.allowed_values | tojson }}
+          {%- else %}
+          - {{ test }}
+          {%- endif %}
+          {%- endfor %}
+        {%- endif %}
+      {%- endfor %}
+  - name: {{ rejected_model }}
+    description: "Rows from the source files that could not be loaded, with the reason"
+  - name: {{ checked_model }}
+    description: "Every source row with its converted values and reject reason"

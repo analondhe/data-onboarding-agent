@@ -13,31 +13,10 @@ from agent.tracing import Tracer
 from api.db import session_factory
 from api.models import MappingStatus, RunStatus
 from evals.corrupt import write_case
-from evals.run_evals import oracle_responder, score_case
+from evals.oracle import oracle_responder
+from evals.scoring import score_case
 
 CORRUPTIONS = ["cryptic_names", "merge_columns", "drop_required", "null_variants"]
-
-
-@pytest.fixture(scope="session")
-def tracking_uri(tmp_path_factory) -> str:
-    return f"sqlite:///{tmp_path_factory.mktemp('mlflow') / 'mlflow.db'}"
-
-
-@pytest.fixture
-def settings(tmp_path: Path, tracking_uri: str) -> Settings:
-    return Settings(
-        llm_base_url="http://unused",
-        llm_model="unused",
-        llm_api_key="unused",
-        llm_reasoning_effort=None,
-        llm_timeout_seconds=1,
-        llm_retry_backoff_seconds=0,
-        database_url=f"sqlite:///{tmp_path / 'app.db'}",
-        mlflow_tracking_uri=tracking_uri,
-        data_dir=tmp_path / "data",
-        review_confidence_threshold=0.8,
-        agent_max_steps=5,
-    )
 
 
 @pytest.fixture
@@ -124,8 +103,8 @@ def test_step_limit_fails_the_run(settings, case):
     endless = FakeLLM(lambda messages: FakeReply(content="still thinking"))
     run, _ = run_onboard(settings, endless, path)
     assert run.status == RunStatus.FAILED
-    assert "Reached the step limit (5)" in run.error
-    assert run.model_calls == 5
+    assert f"Reached the step limit ({settings.agent_max_steps})" in run.error
+    assert run.model_calls == settings.agent_max_steps
 
 
 def test_rejected_submission_is_retried_and_stored_once(settings, case):

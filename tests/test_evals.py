@@ -1,23 +1,19 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from agent.llm import FakeLLM
-from agent.settings import Settings
 from datagen.generate import generate, write_tables
 from evals.corrupt import build_cases
-from evals.run_evals import (
-    CaseScore,
-    aggregate,
-    is_perfect,
-    oracle_responder,
-    run_evals,
-    score_case,
-    select_cases,
-)
+from evals.oracle import oracle_responder
+from evals.run_evals import run_evals, select_cases, smoke_failures
+from evals.scoring import CaseScore, aggregate, normalize_cell, score_case
 
 KEY = {
     "case_id": "customers_01",
@@ -61,6 +57,7 @@ def fake_run(mappings, defects):
         error=None,
         mappings=mappings,
         defects=defects,
+        build_report=None,
         model_calls=3,
         tool_calls=4,
         prompt_tokens=100,
@@ -109,14 +106,53 @@ def test_missing_column_defect_matches_on_target():
 
 
 def test_aggregate_is_micro_averaged_and_split_by_naming():
-    a = CaseScore("a", "t", True, [], "awaiting_review", None, source_columns=8, mapping_correct=6)
+    a = CaseScore("a", "t", True, [], "done", None, source_columns=8, mapping_correct=6)
     b = CaseScore("b", "t", False, [], "failed", "x", source_columns=2, mapping_correct=2)
+    a.cells_total, a.cells_correct, b.cells_total = 100, 90, 100
+    a.build_passed = True
     summary = aggregate([a, b])
     assert summary["mapping_accuracy"] == 0.8
     assert summary["mapping_accuracy_names_changed"] == 0.75
     assert summary["mapping_accuracy_names_unchanged"] == 1.0
     assert summary["failed_runs"] == 1
     assert summary["defect_recall"] is None
+    assert summary["cell_accuracy"] == 0.45
+    assert summary["build_success"] == 0.5
+    assert summary["consistency"] is None  # needs repeated runs
+
+
+def test_consistency_counts_cases_that_pass_every_repeat():
+    def run(case, passed, repeat):
+        s = CaseScore(case, "t", True, [], "done", None, repeat=repeat, source_columns=4)
+        s.mapping_correct = 4 if passed else 3
+        s.build_passed = True
+        return s
+
+    scores = [run("a", True, 1), run("a", True, 2), run("b", True, 1), run("b", False, 2)]
+    summary = aggregate(scores)
+    assert (summary["cases"], summary["runs"], summary["consistency"]) == (2, 4, 0.5)
+
+
+@pytest.mark.parametrize(
+    ("loaded", "clean", "column_type"),
+    [
+        (date(2024, 3, 1), "2024-03-01", "date"),
+        (Decimal("1200.5"), "1200.50", "decimal(10,2)"),
+        (7, "7", "integer"),
+        (True, "true", "boolean"),
+        (None, "", "varchar"),
+        ("CUS-000001", "CUS-000001", "varchar"),
+    ],
+)
+def test_loaded_values_compare_equal_to_clean_text(loaded, clean, column_type):
+    assert normalize_cell(loaded, column_type) == normalize_cell(clean, column_type)
+
+
+def test_cell_normalization_keeps_real_differences():
+    decimal = "decimal(10,2)"
+    assert normalize_cell(Decimal("1200.00"), decimal) != normalize_cell("120.00", decimal)
+    assert normalize_cell(False, "boolean") != normalize_cell("true", "boolean")
+    assert normalize_cell(None, "date") != normalize_cell("2024-01-01", "date")
 
 
 def test_select_cases_interleaves_tables(tmp_path: Path):
@@ -129,33 +165,27 @@ def test_select_cases_interleaves_tables(tmp_path: Path):
     assert [p.name for p in select_cases(tmp_path, ["customers_02"], None)] == ["customers_02"]
 
 
-def test_answer_key_run_scores_perfectly_and_writes_a_scorecard(tmp_path: Path):
-    """The eval-smoke path: real runner and scoring, FakeLLM answering from the answer keys."""
+def test_answer_key_run_maps_builds_and_writes_a_scorecard(tmp_path: Path, settings):
+    """The eval-smoke path: real runner, review, dbt build, and scoring, with FakeLLM answering
+    from the answer keys. Repeated runs must agree."""
     write_tables(generate(seed=5, customers=150), tmp_path / "clean")
     build_cases(tmp_path / "clean", tmp_path / "cases", seed=3, rows=120)
-    settings = Settings(
-        llm_base_url="",
-        llm_model="",
-        llm_api_key="",
-        llm_reasoning_effort=None,
-        llm_timeout_seconds=1,
-        llm_retry_backoff_seconds=0,
-        database_url="unused",
-        mlflow_tracking_uri=f"sqlite:///{tmp_path / 'mlflow.db'}",
-        data_dir=tmp_path / "data",
-        review_confidence_threshold=0.8,
-        agent_max_steps=5,
-    )
-    cases = select_cases(tmp_path / "cases", None, 4)
+    cases = select_cases(tmp_path / "cases", None, 3)
     summary, scores, markdown = run_evals(
         cases,
-        replace(settings),
+        settings,
         lambda key: FakeLLM(oracle_responder(key), model="fake-oracle"),
         tmp_path / "results",
+        repeats=2,
     )
-    assert is_perfect(summary), summary
-    assert [s.case_id for s in scores] == [c.name for c in cases]
-    assert "| Mapping accuracy | 100.0% |" in markdown.read_text()
+    assert smoke_failures(summary) == [], summary
+    assert summary["consistency"] == 1.0  # deterministic answers pass on every repeat
+    assert [(s.case_id, s.repeat) for s in scores] == [(c.name, r) for c in cases for r in (1, 2)]
+    assert all(s.rows_loaded + s.rows_rejected >= 120 for s in scores)
+    assert summary["cell_accuracy"] > 0
+    text = markdown.read_text()
+    assert "| Mapping accuracy | 100.0% |" in text
+    assert "| Build success | 100.0% |" in text
     stored = json.loads(markdown.with_suffix(".json").read_text())
     assert stored["summary"] == summary
     assert stored["meta"]["model"] == "fake-oracle"

@@ -1,0 +1,9 @@
+{#- Clean rows only, in the target schema's columns, plus their source lineage. -#}
+select
+    {%- for col in columns %}
+    "{{ col.name }}",
+    {%- endfor %}
+    _file_id,
+    _source_row
+from {{ "{{" }} ref('{{ checked_model }}') {{ "}}" }}
+where reject_reason is null

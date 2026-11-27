@@ -38,6 +38,7 @@ class SubmitOutcome:
     accepted: bool
     errors: list[str] = field(default_factory=list)
     value: Any = None
+    message: str | None = None  # text for the model instead of the default accept/reject text
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,8 @@ def _execute(call: ToolCall, tools: dict[str, Tool]) -> tuple[str, SubmitOutcome
     if not tool.submits:
         return _to_text(result), None
     outcome: SubmitOutcome = result
+    if outcome.message is not None:
+        return outcome.message, outcome
     if outcome.accepted:
         return "Accepted.", outcome
     problems = "\n".join(f"- {e}" for e in outcome.errors)

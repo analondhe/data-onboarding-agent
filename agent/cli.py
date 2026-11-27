@@ -1,6 +1,10 @@
-"""Command line: onboard one file and print the proposed mappings and defects.
+"""Command line: onboard files, print the proposed mappings and defects, and optionally build.
 
-Usage: python -m agent.cli onboard --file path.csv --schema customers [--customer "Acme Cloud"]
+Usage: python -m agent.cli onboard --file path.csv --schema customers [--approve-all]
+
+Without --approve-all the run stops at awaiting_review. With it, every proposed mapping is
+approved (recorded in review_events), dbt builds the clean table, and the report shows rows
+loaded and rejected, dbt test results, and repairs.
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ import sys
 from pathlib import Path
 
 from agent.llm import OpenAICompatibleLLM
+from agent.review import approve_all
 from agent.runner import onboard
 from agent.settings import Settings
 from agent.tracing import Tracer
@@ -40,7 +45,7 @@ def format_report(run: Run) -> str:
             conf = f"{m.confidence:.2f}" if m.confidence is not None else "  -"
             lines.append(
                 f"  {m.target_column:<20} {_clip(m.source_column or '(none)', 26):<26} "
-                f"{conf:>5}  {'REVIEW' if m.status == 'proposed' else 'auto':<9} "
+                f"{conf:>5}  {m.status:<9} "
                 f"{_clip(m.transform_sql, 70)}"
             )
             lines.append(f"  {'':<20} {_clip(m.reason, 110)}")
@@ -50,7 +55,29 @@ def format_report(run: Run) -> str:
             where = d.column_name or d.target_column or "-"
             rows = f", ~{d.affected_rows} rows" if d.affected_rows is not None else ""
             lines.append(f"  {d.defect_type:<24} {where}{rows}: {_clip(d.description, 90)}")
+    if run.build_report:
+        lines += ["", *format_build(run.build_report)]
     return "\n".join(lines)
+
+
+def format_build(report: dict) -> list[str]:
+    dbt = report["dbt"]
+    lines = [
+        f"Build: {report['status']} after {report['repairs']} repairs. dbt models "
+        f"{dbt['models_passed']} passed / {dbt['models_failed']} failed, tests "
+        f"{dbt['tests_passed']} passed / {dbt['tests_failed']} failed"
+    ]
+    for r in dbt["results"]:
+        if r["status"] not in ("success", "pass"):
+            lines.append(f"  {r['kind']} {r['name']}: {r['status']} {_clip(r['message'], 80)}")
+    for a in report["row_accounting"]:
+        lines.append(
+            f"Rows for file {a['file_id']}: {a['rows_in']} in = {a['loaded']} loaded + "
+            f"{a['rejected']} rejected ({'balanced' if a['balanced'] else 'NOT BALANCED'})"
+        )
+        for reason, n in a["reject_reasons"].items():
+            lines.append(f"  {n:>6}  {_clip(reason, 100)}")
+    return lines
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -60,6 +87,11 @@ def main(argv: list[str] | None = None) -> int:
     cmd.add_argument("--file", type=Path, action="append", required=True, dest="files")
     cmd.add_argument("--schema", required=True, help="target schema, e.g. customers")
     cmd.add_argument("--customer", default="Acme Cloud")
+    cmd.add_argument(
+        "--approve-all",
+        action="store_true",
+        help="approve every proposed mapping and build the clean table with dbt",
+    )
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()
@@ -81,9 +113,11 @@ def main(argv: list[str] | None = None) -> int:
             customer_name=args.customer,
             schema_name=args.schema,
             paths=args.files,
+            review=approve_all if args.approve_all else None,
         )
         print(format_report(run))
-    return 0 if run.status == RunStatus.AWAITING_REVIEW else 1
+    expected = RunStatus.DONE if args.approve_all else RunStatus.AWAITING_REVIEW
+    return 0 if run.status == expected else 1
 
 
 if __name__ == "__main__":
